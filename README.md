@@ -1,2 +1,2 @@
-# -agent
+# mini-agent
 一个基于DSH极简模式提示词和工具列表参考开发的单文件agent工具，可以用来在没有agent的电脑上快速安装一个正常的agent
