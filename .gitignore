@@ -1,0 +1,14 @@
+﻿# 日志与临时文件
+*.log
+dsh-mini-gui.log
+*.tmp
+*.temp
+
+# Win7 解压出来的运行时大目录 (已包含 pwsh-embedded.zip，无需提交数百个解压 dll)
+**/pwsh/
+!**/pwsh-embedded.zip
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.class
