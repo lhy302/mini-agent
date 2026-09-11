@@ -43,7 +43,7 @@ import uuid
 
 APP_NAME = "dsh-mini"
 APP_TITLE = "DSH 极简 Agent"
-VERSION = "1.1.5"
+VERSION = "1.2.0"
 
 IS_WIN = (os.name == "nt")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,7 +70,10 @@ DSH_WIN7_PERSONA = (
     "4. Shell Session State & Execution:\n"
     "   - The `pwsh` tool operates as a persistent PowerShell 7 session: environment variables, functions, aliases, and working directory are preserved across consecutive tool calls (unless degraded to one-shot mode, which will be noted).\n"
     "5. Windows 7 Native Compatibility:\n"
-    "   - You can confidently use modern PowerShell 7 syntax, but remember that Windows 7 native system services, paths, and system executables (e.g. cmd.exe, sc.exe, net.exe, reg.exe) follow Windows 7 conventions."
+    "   - You can confidently use modern PowerShell 7 syntax, but remember that Windows 7 native system services, paths, and system executables (e.g. cmd.exe, sc.exe, net.exe, reg.exe) follow Windows 7 conventions.\n"
+    "6. Autonomous Agent Capabilities:\n"
+    "   - You have autonomous tools to control the mouse ('mouse_control'), read any local image for multimodal visual analysis ('read_image'), and capture the screen ('take_screenshot').\n"
+    "   - You can autonomously decide when and how to inspect images, capture screen state, and operate the mouse."
 )
 
 # 与 DSH 一致的输出截断标记
@@ -610,6 +613,7 @@ DEFAULT_CONFIG = {
     "show_reasoning": True,       # 显示模型思维链（reasoning_content）：思考死循环时要能看见并打断
     "save_sessions": False,       # 自动保存会话到 sessions/
     "show_live_output": True,     # 工具执行时实时显示 shell 输出
+    "support_vision": True,       # 是否支持读取图片并按 OpenAI 视觉格式发送（可随时切换）
 }
 
 CONFIG_HINT = {
@@ -2233,6 +2237,317 @@ def run_editor_tool(args, max_output_chars):
 
 
 # =============================================================================
+# 工具三：mouse_control —— Windows 鼠标控制（Agent 鼠标交互能力）
+# =============================================================================
+
+MOUSE_ACTIONS = ("move", "click", "double_click", "down", "up", "scroll", "position")
+MOUSE_BUTTONS = ("left", "right", "middle")
+
+
+def _get_screen_size():
+    if not IS_WIN:
+        return 1920, 1080
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        return int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1))
+    except Exception:
+        return 1920, 1080
+
+
+def _get_cursor_pos():
+    if not IS_WIN:
+        return 0, 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        pt = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        return int(pt.x), int(pt.y)
+    except Exception:
+        return 0, 0
+
+
+def run_mouse_tool(args):
+    """纯 ctypes 实现 Windows 鼠标控制：操作鼠标放到哪、点击哪、左键/右键/中键/滚轮/坐标查询。"""
+    if not isinstance(args, dict):
+        raise ValueError("mouse_control 参数必须是 JSON 对象")
+    action = str(args.get("action") or "").lower().strip()
+    if not action:
+        raise ValueError("Parameter `action` is required for tool: mouse_control")
+    if action not in MOUSE_ACTIONS:
+        raise ValueError("Invalid action `%s`. Allowed options: %s" % (action, ", ".join(MOUSE_ACTIONS)))
+
+    button = str(args.get("button") or "left").lower().strip()
+    if button not in MOUSE_BUTTONS:
+        raise ValueError("Invalid button `%s`. Allowed options: %s" % (button, ", ".join(MOUSE_BUTTONS)))
+
+    target_x = args.get("x")
+    target_y = args.get("y")
+    scroll_amount = args.get("scroll_amount")
+
+    screen_w, screen_h = _get_screen_size()
+    cur_x, cur_y = _get_cursor_pos()
+
+    if not IS_WIN:
+        return "Non-Windows environment: simulated mouse action '%s' on %s button" % (action, button)
+
+    import ctypes
+    user32 = ctypes.windll.user32
+
+    # 若指定了坐标，移动到目标位置
+    if target_x is not None or target_y is not None:
+        new_x = int(target_x if target_x is not None else cur_x)
+        new_y = int(target_y if target_y is not None else cur_y)
+        new_x = max(0, min(screen_w - 1, new_x))
+        new_y = max(0, min(screen_h - 1, new_y))
+        user32.SetCursorPos(new_x, new_y)
+        cur_x, cur_y = new_x, new_y
+
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP = 0x0004
+    MOUSEEVENTF_RIGHTDOWN = 0x0008
+    MOUSEEVENTF_RIGHTUP = 0x0010
+    MOUSEEVENTF_MIDDLEDOWN = 0x0020
+    MOUSEEVENTF_MIDDLEUP = 0x0040
+    MOUSEEVENTF_WHEEL = 0x0800
+    WHEEL_DELTA = 120
+
+    btn_flags = {
+        "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+    }
+
+    down_flag, up_flag = btn_flags[button]
+
+    if action == "move":
+        return "Mouse moved to (%d, %d). Screen resolution: %dx%d." % (cur_x, cur_y, screen_w, screen_h)
+    elif action == "click":
+        user32.mouse_event(down_flag, 0, 0, 0, 0)
+        time.sleep(0.02)
+        user32.mouse_event(up_flag, 0, 0, 0, 0)
+        return "Mouse clicked (%s button) at (%d, %d). Screen resolution: %dx%d." % (button, cur_x, cur_y, screen_w, screen_h)
+    elif action == "double_click":
+        user32.mouse_event(down_flag, 0, 0, 0, 0)
+        time.sleep(0.02)
+        user32.mouse_event(up_flag, 0, 0, 0, 0)
+        time.sleep(0.05)
+        user32.mouse_event(down_flag, 0, 0, 0, 0)
+        time.sleep(0.02)
+        user32.mouse_event(up_flag, 0, 0, 0, 0)
+        return "Mouse double-clicked (%s button) at (%d, %d). Screen resolution: %dx%d." % (button, cur_x, cur_y, screen_w, screen_h)
+    elif action == "down":
+        user32.mouse_event(down_flag, 0, 0, 0, 0)
+        return "Mouse button down (%s button) at (%d, %d)." % (button, cur_x, cur_y)
+    elif action == "up":
+        user32.mouse_event(up_flag, 0, 0, 0, 0)
+        return "Mouse button up (%s button) at (%d, %d)." % (button, cur_x, cur_y)
+    elif action == "scroll":
+        amount = int(scroll_amount if scroll_amount is not None else -1)
+        user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, amount * WHEEL_DELTA, 0)
+        direction = "up" if amount > 0 else "down"
+        return "Mouse wheel scrolled %s by %d tick(s) at (%d, %d)." % (direction, abs(amount), cur_x, cur_y)
+    elif action == "position":
+        return "Current cursor position: (%d, %d). Screen resolution: %dx%d." % (cur_x, cur_y, screen_w, screen_h)
+    else:
+        raise ValueError("Unsupported mouse action: %s" % action)
+
+
+# =============================================================================
+# 图像与视觉支持（OpenAI 兼容多模态格式）
+# =============================================================================
+
+IMAGE_EXTENSIONS = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+
+def is_image_path(path):
+    if not path or not isinstance(path, str):
+        return False
+    clean = path.strip().strip('"').strip("'")
+    if not os.path.isfile(clean):
+        return False
+    _, ext = os.path.splitext(clean.lower())
+    return ext in IMAGE_EXTENSIONS
+
+
+def encode_image_to_data_url(path):
+    clean = path.strip().strip('"').strip("'")
+    if not os.path.isfile(clean):
+        raise ValueError("Image file not found: %s" % clean)
+    _, ext = os.path.splitext(clean.lower())
+    mime = IMAGE_EXTENSIONS.get(ext, "image/png")
+    with open(clean, "rb") as handle:
+        data = handle.read()
+    b64_str = base64.b64encode(data).decode("ascii")
+    return "data:%s;base64,%s" % (mime, b64_str)
+
+
+def extract_image_paths_from_text(text):
+    """从文本中提取出有效存在的本地图片路径。"""
+    if not text:
+        return []
+    paths = []
+    pattern = r'(?:@)?([A-Za-z]:[\\/][^\r\n"\'<>|?*]+\.(?:png|jpg|jpeg|webp|gif|bmp)|[\w\-.\\/]+?\.(?:png|jpg|jpeg|webp|gif|bmp))'
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        candidate = match.group(1).strip().strip('"').strip("'")
+        if os.path.isfile(candidate):
+            abs_p = os.path.abspath(candidate)
+            if abs_p not in paths:
+                paths.append(abs_p)
+    return paths
+
+
+def build_openai_user_content(user_text, image_paths=None, support_vision=True):
+    """按照 OpenAI 多模态格式构造 user 消息的 content。
+
+    开启视觉且存在图片时，返回 content 列表：
+      [{"type": "text", "text": ...}, {"type": "image_url", "image_url": {"url": "data:image/...;base64,..."}}]
+    未开启视觉或无图片时，返回纯文本字符串。
+    """
+    if not support_vision or not image_paths:
+        return user_text
+
+    data_urls = []
+    for p in image_paths:
+        try:
+            data_urls.append(encode_image_to_data_url(p))
+        except Exception:
+            pass
+
+    if not data_urls:
+        return user_text
+
+    content = [{"type": "text", "text": user_text}]
+    for url in data_urls:
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": url,
+                "detail": "auto"
+            }
+        })
+    return content
+
+
+def capture_screenshot(save_path=None):
+    """纯 ctypes + GDI+ 原生截取当前 Windows 屏幕并保存为 PNG 格式，返回文件绝对路径。"""
+    if not IS_WIN:
+        raise RuntimeError("Screen capture requires Windows")
+
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    gdiplus = ctypes.windll.gdiplus
+
+    class GdiplusStartupInput(ctypes.Structure):
+        _fields_ = [
+            ("GdiplusVersion", wintypes.DWORD),
+            ("DebugEventCallback", ctypes.c_void_p),
+            ("SuppressBackgroundThread", wintypes.BOOL),
+            ("SuppressExternalCodecs", wintypes.BOOL)
+        ]
+
+    token = ctypes.c_void_p()
+    startup_in = GdiplusStartupInput(1, None, False, False)
+    if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(startup_in), None) != 0:
+        raise RuntimeError("Failed to initialize GDI+")
+
+    try:
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        hdc_screen = user32.GetDC(None)
+        hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
+        hbm = gdi32.CreateCompatibleBitmap(hdc_screen, w, h)
+        old_bm = gdi32.SelectObject(hdc_mem, hbm)
+        gdi32.BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, 0, 0, 0x00CC0020)
+
+        p_bitmap = ctypes.c_void_p()
+        gdiplus.GdipCreateBitmapFromHBITMAP(hbm, None, ctypes.byref(p_bitmap))
+
+        # PNG 编码器 CLSID: {557CF406-1A04-11D3-9A73-0000F81EF32E}
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8)
+            ]
+
+        png_clsid = GUID(
+            0x557cf406, 0x1a04, 0x11d3,
+            (ctypes.c_ubyte * 8)(0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e)
+        )
+
+        if not save_path:
+            save_path = os.path.join(
+                tempfile.gettempdir(), "dsh_screenshot_%d.png" % int(time.time() * 1000)
+            )
+        save_path = os.path.abspath(save_path)
+
+        res = gdiplus.GdipSaveImageToFile(p_bitmap, save_path, ctypes.byref(png_clsid), None)
+        gdiplus.GdipDisposeImage(p_bitmap)
+        gdi32.SelectObject(hdc_mem, old_bm)
+        gdi32.DeleteObject(hbm)
+        gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(None, hdc_screen)
+
+        if res != 0 or not os.path.isfile(save_path):
+            raise RuntimeError("Failed to save screenshot via GDI+ (code: %d)" % res)
+        return save_path
+    finally:
+        gdiplus.GdiplusShutdown(token)
+
+
+def run_read_image_tool(args, config):
+    """AI 自行调用读取本地图片发送给自己进行多模态视觉分析。"""
+    if not isinstance(args, dict):
+        raise ValueError("read_image 参数必须是 JSON 对象")
+    path = args.get("path")
+    if not path or not str(path).strip():
+        raise ValueError("Parameter `path` is required for tool: read_image")
+    target = os.path.abspath(os.path.expanduser(str(path).strip().strip('"').strip("'")))
+    if not os.path.isfile(target):
+        raise ValueError("The image file '%s' does not exist." % target)
+    if not is_image_path(target):
+        raise ValueError("File '%s' is not a supported image format (supported: png, jpg, jpeg, webp, gif, bmp)." % target)
+
+    support_vision = bool(config.get("support_vision", True))
+    if not support_vision:
+        return ("Image '%s' exists, but visual support is disabled in config (support_vision=false)." % target, None, "auto")
+
+    size_bytes = os.path.getsize(target)
+    detail = args.get("detail") or "auto"
+    msg = ("Successfully read image '%s' (size: %d bytes). The image has been attached to your context for visual analysis."
+           % (target, size_bytes))
+    return msg, target, detail
+
+
+def run_screenshot_tool(args, config):
+    """AI 自行调用截取当前屏幕发送给自己进行多模态视觉分析，便于观察 GUI 决定鼠标操作。"""
+    save_path = args.get("save_path") if isinstance(args, dict) else None
+    support_vision = bool(config.get("support_vision", True))
+    if not support_vision:
+        return ("Screenshot captured, but visual support is disabled in config (support_vision=false).", None, "auto")
+
+    shot_path = capture_screenshot(save_path)
+    size_bytes = os.path.getsize(shot_path)
+    screen_w, screen_h = _get_screen_size()
+    msg = ("Screenshot captured (%dx%d, %d bytes) at '%s' and attached to your context for visual analysis."
+           % (screen_w, screen_h, size_bytes, shot_path))
+    return msg, shot_path, "auto"
+
+
+# =============================================================================
 # 7. 工具注册（OpenAI tools schema）
 # =============================================================================
 
@@ -2330,6 +2645,93 @@ TOOL_SCHEMAS = [
                     },
                 },
                 "required": ["command", "path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mouse_control",
+            "description": "\n".join([
+                "Control the mouse cursor, click buttons, and scroll wheel on Windows.",
+                "* Actions: `move` (move cursor to x, y), `click` (click button), `double_click`, `down` (press and hold button), `up` (release button), `scroll` (vertical wheel scroll), `position` (query cursor position & screen dimensions).",
+                "* Buttons: `left` (default), `right`, `middle`.",
+                "* Coordinates: `x` and `y` are pixel coordinates (0, 0 is top-left of the primary display). If omitted for click/down/up, current cursor position is used.",
+                "* Scroll: `scroll_amount` specifies wheel ticks (positive = scroll up, negative = scroll down; default -1).",
+            ]),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["move", "click", "double_click", "down", "up", "scroll", "position"],
+                        "description": "The mouse action: move, click, double_click, down, up, scroll, or position (query cursor position & screen dimensions).",
+                    },
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right", "middle"],
+                        "description": "Mouse button for click/double_click/down/up. Default is 'left'.",
+                    },
+                    "x": {
+                        "type": "integer",
+                        "description": "Horizontal pixel coordinate (0 is left edge).",
+                    },
+                    "y": {
+                        "type": "integer",
+                        "description": "Vertical pixel coordinate (0 is top edge).",
+                    },
+                    "scroll_amount": {
+                        "type": "integer",
+                        "description": "Amount to scroll. Positive scrolls up, negative scrolls down. Default is -1 (scroll down 1 step).",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_image",
+            "description": "\n".join([
+                "Read any local image file (PNG, JPG, JPEG, WEBP, GIF, BMP) to inspect and send to yourself for multimodal visual analysis.",
+                "* Use this autonomously whenever you want to inspect an image file or analyze visual details.",
+                "* The image content will be automatically encoded and attached to your conversation context for immediate visual perception.",
+            ]),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the local image file to inspect.",
+                    },
+                    "detail": {
+                        "type": "string",
+                        "enum": ["auto", "low", "high"],
+                        "description": "Visual resolution detail level (default 'auto').",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "take_screenshot",
+            "description": "\n".join([
+                "Capture a screenshot of the primary Windows desktop and attach it to your context for multimodal visual analysis.",
+                "* Use this autonomously to inspect the current GUI, locate UI elements/buttons, or verify the visual result of mouse operations.",
+                "* Works hand-in-hand with 'mouse_control' for autonomous GUI operations.",
+            ]),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "save_path": {
+                        "type": "string",
+                        "description": "Optional file path to save the screenshot PNG. Defaults to a temporary file.",
+                    },
+                },
             },
         },
     },
@@ -2666,7 +3068,10 @@ class Agent(object):
                     tool_note = self.shell.describe()
                 except Exception:
                     pass
-            note = ("Runtime: Windows 7 (x64) [Win7 Deep Custom Edition]; working directory: %s; %s."
+            note = ("Runtime: Windows 7 (x64) [Win7 Deep Custom Edition]; working directory: %s; %s. "
+                    "You have autonomous tools to control the mouse ('mouse_control'), "
+                    "read any local image for visual analysis ('read_image'), and capture the screen ('take_screenshot'). "
+                    "You can autonomously decide when and how to inspect images, capture screen state, and operate the mouse."
                     % (self.config.get("cwd") or os.getcwd(), tool_note))
             prompt = prompt.rstrip() + "\n\n" + note
         return prompt
@@ -2711,19 +3116,32 @@ class Agent(object):
         if name == "pwsh":
             on_output = (lambda chunk: self._emit("on_tool_output", chunk)) \
                 if self.config.get("show_live_output", True) else None
-            return run_pwsh_tool(self.shell, args, self.max_output_chars, on_output)
+            return run_pwsh_tool(self.shell, args, self.max_output_chars, on_output), None, "auto"
         if name == "str_replace_editor":
-            return run_editor_tool(args, self.max_output_chars)
+            return run_editor_tool(args, self.max_output_chars), None, "auto"
+        if name == "mouse_control":
+            return run_mouse_tool(args), None, "auto"
+        if name == "read_image":
+            return run_read_image_tool(args, self.config)
+        if name == "take_screenshot":
+            return run_screenshot_tool(args, self.config)
         raise ValueError("Unknown tool: %s" % name)
 
     # ---- 一轮对话 ----
 
-    def run_turn(self, user_text, cancel=None):
+    def run_turn(self, user_text, cancel=None, images=None):
         """跑一轮对话。cancel 是一个 threading.Event，置位后会尽快中断本轮
-        （GUI 里按 Esc 就是走这条路）。"""
+        （GUI 里按 Esc 就是走这条路）。images 可指定图片路径列表，支持按 OpenAI 视觉格式发图。"""
         user_text = sanitize_text(user_text)
         self.last_user_message = user_text
-        self.messages.append({"role": "user", "content": user_text})
+
+        support_vision = bool(self.config.get("support_vision", True))
+        img_paths = list(images or [])
+        if support_vision and not img_paths:
+            img_paths = extract_image_paths_from_text(user_text)
+
+        content = build_openai_user_content(user_text, img_paths, support_vision=support_vision)
+        self.messages.append({"role": "user", "content": content})
         self._refresh_system_prompt()
         for round_index in range(self.max_rounds):
             self._emit("on_status", "等待模型响应…")
@@ -2770,8 +3188,14 @@ class Agent(object):
                     self._emit("on_tool_end", name, result, 0.0, True)
                     continue
                 self._emit("on_tool_start", name, args)
+                pending_image = None
+                image_detail = "auto"
                 try:
-                    result = self._execute_tool(name, args, call_id)
+                    exec_res = self._execute_tool(name, args, call_id)
+                    if isinstance(exec_res, tuple) and len(exec_res) == 3:
+                        result, pending_image, image_detail = exec_res
+                    else:
+                        result = exec_res
                     is_error = False
                 except KeyboardInterrupt:
                     raise
@@ -2782,6 +3206,29 @@ class Agent(object):
                 elapsed = time.monotonic() - started
                 self._emit("on_tool_end", name, result, elapsed, is_error)
                 self.messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
+                # 若 AI 自主调用了看图或截屏工具，且开启了视觉支持：自动以 OpenAI 视觉协议向上下文注入图片供模型视觉分析
+                if pending_image and not is_error and self.config.get("support_vision", True):
+                    try:
+                        data_url = encode_image_to_data_url(pending_image)
+                        self.messages.append({
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "[Visual Feedback] Image from '%s' attached for your multimodal visual analysis:" % os.path.basename(pending_image)
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": data_url,
+                                        "detail": image_detail or "auto"
+                                    }
+                                }
+                            ]
+                        })
+                    except Exception as exc:
+                        write_crash_log(type(exc), exc, None, where="agent-attach-image")
 
         self._emit("on_notice", "已达到最大工具调用轮数（%d），本轮停止。" % self.max_rounds)
         return ""
@@ -3191,6 +3638,14 @@ class Tui(Emitter):
             if command == "view" and args.get("view_range"):
                 extra = " " + str(args.get("view_range"))
             return "%s %s%s" % (command, path, extra)
+        if name == "mouse_control":
+            action = args.get("action") or "?"
+            button = args.get("button") or "left"
+            return "%s %s" % (action, button)
+        if name == "read_image":
+            return "read %s" % (args.get("path") or "?")
+        if name == "take_screenshot":
+            return "take screenshot"
         return ""
 
     def finish_turn(self):
@@ -3268,8 +3723,8 @@ def run_selftest():
     try:
         # ---- 工具 schema ----
         names = [schema["function"]["name"] for schema in TOOL_SCHEMAS]
-        check("工具集与 DSH 极简模式一致（pwsh + str_replace_editor）",
-              names == ["pwsh", "str_replace_editor"], str(names))
+        check("工具集包含完整自主 Agent 工具（pwsh + str_replace_editor + mouse_control + read_image + take_screenshot）",
+              names == ["pwsh", "str_replace_editor", "mouse_control", "read_image", "take_screenshot"], str(names))
 
         # ---- 编辑器 ----
         create_result = run_editor_tool({"command": "create", "path": sample,
@@ -3634,6 +4089,62 @@ def run_selftest():
 
         # ---- 显示宽度 ----
         check("中文宽度计算", display_width("中文") == 4 and display_width("ab") == 2)
+
+        # ---- 鼠标控制工具自检 ----
+        m_pos = run_mouse_tool({"action": "position"})
+        check("mouse_control 查询位置与分辨率", "Current cursor position" in m_pos and "Screen resolution" in m_pos, m_pos)
+        m_err = ""
+        try:
+            run_mouse_tool({"action": "invalid_action"})
+        except ValueError as exc:
+            m_err = str(exc)
+        check("mouse_control 非法 action 报错", "Invalid action" in m_err, m_err)
+        m_btn_err = ""
+        try:
+            run_mouse_tool({"action": "click", "button": "invalid_btn"})
+        except ValueError as exc:
+            m_btn_err = str(exc)
+        check("mouse_control 非法 button 报错", "Invalid button" in m_btn_err, m_btn_err)
+
+        # ---- 图片与视觉多模态支持自检 ----
+        test_img = os.path.join(temp_dir, "test.png")
+        with open(test_img, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00")
+        check("is_image_path 识别本地 PNG", is_image_path(test_img) is True)
+        check("is_image_path 忽略非图片", is_image_path(sample) is False)
+        data_url = encode_image_to_data_url(test_img)
+        check("encode_image_to_data_url 生成 Data URL", data_url.startswith("data:image/png;base64,"), data_url[:50])
+
+        vision_content = build_openai_user_content("分析这张图", [test_img], support_vision=True)
+        check("build_openai_user_content 开启视觉生成多模态数组",
+              isinstance(vision_content, list) and len(vision_content) == 2 and vision_content[1].get("type") == "image_url",
+              str(vision_content))
+        novision_content = build_openai_user_content("分析这张图", [test_img], support_vision=False)
+        check("build_openai_user_content 关闭视觉回退纯文本",
+              isinstance(novision_content, str) and novision_content == "分析这张图",
+              str(novision_content))
+
+        # ---- GuiEmitter 精炼显示与文件内容不倾倒自检（BUG 2 / BUG 3） ----
+        emitter_stub = _StubGui()
+        gui_emit = GuiEmitter(emitter_stub, {"show_live_output": True})
+        big_file_content = "\n".join("line %d" % i for i in range(200))
+        gui_emit.on_tool_start("str_replace_editor", {"command": "view", "path": "test.txt"})
+        gui_emit.on_tool_end("str_replace_editor", big_file_content, 0.1, False)
+        view_out = "".join(emitter_stub.parts)
+        check("GuiEmitter view 读文件不倾倒文件内容到界面",
+              "已读取文件内容，共 200 行" in view_out and "line 50" not in view_out,
+              view_out)
+
+        # ---- AI 自主读图与截屏工具自检 ----
+        read_msg, read_path, detail = run_read_image_tool({"path": test_img}, {"support_vision": True})
+        check("run_read_image_tool 自主读图成功", "Successfully read image" in read_msg and os.path.samefile(read_path, test_img), read_msg)
+        shot_res, shot_img, _ = run_screenshot_tool({}, {"support_vision": True})
+        check("run_screenshot_tool 自主截屏成功", "Screenshot captured" in shot_res and os.path.isfile(shot_img), shot_res)
+        if shot_img and os.path.isfile(shot_img):
+            try:
+                os.remove(shot_img)
+            except Exception:
+                pass
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -4340,7 +4851,9 @@ class GuiEmitter(Emitter):
     排版规则（每条都对应一次"回车"）：
       * 每块内容自带结尾换行，块与块之间还额外空一行；
       * 模型正文：● 开头；思维链：… 开头（灰色无法用在 Edit 上，用前缀区分）；
-      * 工具调用：» 名字 + 缩进的命令；实时输出：│ 开头；结束：√/× + 耗时。
+      * 工具调用：» 名字 + 智能精简摘要；实时输出：│ 开头（超长自动折叠）；
+      * 读写文件与命令结果：完成确认与统计（不倾倒大段文件内容与冗长输出）；
+      * 结束：√/× + 耗时。
     注意：Windows 的 EDIT 控件只认 CRLF，这些换行最终由 DshGui.push 统一转成 \r\n。
     """
 
@@ -4349,6 +4862,10 @@ class GuiEmitter(Emitter):
         self.show_reasoning = bool(config.get("show_reasoning", True))
         self.live_output = bool(config.get("show_live_output", True))
         self._mode = None
+        self._live_lines = 0
+        self._live_truncated = False
+        self._current_tool = None
+        self._current_args = None
 
     def _end_block(self):
         if self._mode is not None:
@@ -4374,32 +4891,149 @@ class GuiEmitter(Emitter):
 
     def on_tool_start(self, name, args):
         self._end_block()
+        self._current_tool = name
+        self._current_args = args or {}
+        self._live_lines = 0
+        self._live_truncated = False
+
         if name == "pwsh":
-            command = str(args.get("command") or "").rstrip()
+            command = str(args.get("command") or "").strip()
+            lines = command.splitlines() if command else []
             self.gui.push("» pwsh\n")
-            for line in (command.splitlines() or [""]):
-                self.gui.push("    " + line.rstrip() + "\n")
+            if len(lines) <= 2:
+                for line in lines:
+                    line_str = line.rstrip()
+                    if len(line_str) > 160:
+                        line_str = line_str[:160] + "…"
+                    self.gui.push("    " + line_str + "\n")
+            else:
+                for line in lines[:2]:
+                    line_str = line.rstrip()
+                    if len(line_str) > 160:
+                        line_str = line_str[:160] + "…"
+                    self.gui.push("    " + line_str + "\n")
+                self.gui.push("    …（脚本共 %d 行，其余已折叠）\n" % len(lines))
         elif name == "str_replace_editor":
-            self.gui.push("» %s  %s  %s\n" % (name, args.get("command") or "?",
-                                              args.get("path") or "?"))
+            cmd = args.get("command") or "?"
+            path = args.get("path") or "?"
+            if cmd == "view":
+                vr = args.get("view_range")
+                range_str = " [第 %d~%d 行]" % (vr[0], vr[1]) if (isinstance(vr, (list, tuple)) and len(vr) == 2) else ""
+                if os.path.isdir(path):
+                    self.gui.push("» 浏览目录: %s\n" % path)
+                else:
+                    self.gui.push("» 读取文件: %s%s\n" % (path, range_str))
+            elif cmd == "create":
+                self.gui.push("» 创建文件: %s\n" % path)
+            elif cmd == "str_replace":
+                self.gui.push("» 编辑文件: %s (替换文本)\n" % path)
+            elif cmd == "insert":
+                self.gui.push("» 编辑文件: %s (在第 %s 行插入)\n" % (path, args.get("insert_line", "?")))
+            else:
+                self.gui.push("» 编辑文件: %s  %s\n" % (cmd, path))
+        elif name == "mouse_control":
+            act = args.get("action") or "action"
+            btn = args.get("button")
+            x = args.get("x")
+            y = args.get("y")
+            scroll = args.get("scroll_amount")
+            details = []
+            if act in ("click", "double_click", "down", "up") and btn:
+                details.append("按键=" + str(btn))
+            if x is not None or y is not None:
+                details.append("坐标=(%s, %s)" % (x if x is not None else "当前", y if y is not None else "当前"))
+            if act == "scroll" and scroll is not None:
+                details.append("步数=%s" % scroll)
+            det_str = (" [" + ", ".join(details) + "]") if details else ""
+            self.gui.push("» 鼠标操作: %s%s\n" % (act, det_str))
+        elif name == "read_image":
+            self.gui.push("» 读取图片: %s\n" % (args.get("path") or "?"))
+        elif name == "take_screenshot":
+            self.gui.push("» 截取屏幕\n")
         else:
-            self.gui.push("» %s  %s\n" % (name, json.dumps(args, ensure_ascii=False)[:200]))
+            self.gui.push("» %s  %s\n" % (name, json.dumps(args, ensure_ascii=False)[:120]))
         self.gui.set_status("执行工具…")
 
     def on_tool_output(self, chunk):
-        if self.live_output and chunk.strip():
-            for line in chunk.rstrip("\n").splitlines():
-                self.gui.push("  │ " + line + "\n")
+        if not self.live_output or not chunk or not chunk.strip():
+            return
+        if self._live_truncated:
+            return
+        lines = chunk.rstrip("\n").splitlines()
+        for line in lines:
+            if not line.strip():
+                continue
+            self._live_lines += 1
+            if self._live_lines > 8:
+                self.gui.push("  │ …（更多实时输出已省略，完整结果可在日志中查看）\n")
+                self._live_truncated = True
+                break
+            line_show = line.rstrip()
+            if len(line_show) > 200:
+                line_show = line_show[:200] + "…"
+            self.gui.push("  │ " + line_show + "\n")
 
     def on_tool_end(self, name, result, elapsed, is_error):
         self.gui.push("  %s %s · %s\n" % ("×" if is_error else "√",
                                           fmt_duration(elapsed), "失败" if is_error else "完成"))
         body = (result or "").strip("\r\n")
-        if body:
-            if len(body) > 4000:
-                body = body[:4000] + "\n…（界面只显示前 4000 字，完整内容见日志文件）"
-            for line in body.splitlines():
-                self.gui.push("  " + line.rstrip() + "\n")
+        args = self._current_args or {}
+
+        if is_error:
+            # 失败时输出错误原因摘要（最多 3 行）
+            err_lines = body.splitlines() if body else ["未知错误"]
+            for eline in err_lines[:3]:
+                self.gui.push("  ! " + eline[:200] + "\n")
+            if len(err_lines) > 3:
+                self.gui.push("  ! …（详细报错请查看界面日志）\n")
+        else:
+            # 成功时：区分工具类型，精炼显示，绝不倾倒大段文本
+            if name == "str_replace_editor":
+                cmd = args.get("command") or ""
+                if cmd == "view":
+                    # BUG 3 修复核心：绝不将整个文件的内容打印出来
+                    line_count = body.count("\n") + 1 if body else 0
+                    if "Here're the files and directories" in body:
+                        self.gui.push("  (已获取目录列表，模型已接收)\n")
+                    else:
+                        self.gui.push("  (已读取文件内容，共 %d 行，模型已接收)\n" % line_count)
+                elif cmd == "create":
+                    self.gui.push("  (文件创建成功)\n")
+                elif cmd in ("str_replace", "insert"):
+                    self.gui.push("  (文件修改成功)\n")
+                else:
+                    self.gui.push("  (操作成功完成)\n")
+            elif name == "mouse_control":
+                # 鼠标控制只显示简要单行结果
+                first_line = body.splitlines()[0] if body else "操作完成"
+                self.gui.push("  (%s)\n" % first_line)
+            elif name == "read_image":
+                self.gui.push("  (已读取图片并发送给模型进行视觉分析)\n")
+            elif name == "take_screenshot":
+                self.gui.push("  (已截取屏幕并发送给模型进行视觉分析)\n")
+            elif name == "pwsh":
+                # BUG 2 修复核心：已在 live_output 输出了则不重复打印；未输出时若较长则精简折叠
+                if self._live_lines > 0:
+                    pass
+                else:
+                    pwsh_lines = body.splitlines() if body else []
+                    if len(pwsh_lines) <= 3 and len(body) <= 300:
+                        for pline in pwsh_lines:
+                            self.gui.push("  " + pline.rstrip() + "\n")
+                    elif pwsh_lines:
+                        self.gui.push("  " + pwsh_lines[0][:160] + "\n")
+                        self.gui.push("  …（命令输出共 %d 行，已省略显示，完整内容见界面日志）\n" % len(pwsh_lines))
+                        if len(pwsh_lines) > 1:
+                            self.gui.push("  " + pwsh_lines[-1][:160] + "\n")
+            else:
+                other_lines = body.splitlines() if body else []
+                if len(other_lines) <= 2 and len(body) <= 200:
+                    for oline in other_lines:
+                        self.gui.push("  " + oline.rstrip() + "\n")
+                elif other_lines:
+                    self.gui.push("  " + other_lines[0][:160] + "\n")
+                    self.gui.push("  …（输出已折叠，完整内容见界面日志）\n")
+
         self._end_block()
         self.gui.set_status("就绪")
 
@@ -4498,6 +5132,7 @@ class _DiagWindow(object):
         edit = 0x40000000 | 0x10000000 | 0x00200000 | 0x00800000 | 0x0004 | 0x0040 | 0x0800
         button = 0x40000000 | 0x10000000 | 0x00010000
         self.controls["text"] = u.CreateWindowExW(0, "EDIT", "", edit, 0, 0, 10, 10, self.hwnd, 41, None, None)
+        u.SendMessageW(self.controls["text"], 0x00C5, 0, 0)
         for key, label, cid in (("copy", "复制全部", 42), ("save", "另存诊断文件", 43),
                                 ("clear", "清空", 44), ("close", "关闭", 45)):
             self.controls[key] = u.CreateWindowExW(0, "BUTTON", label, button, 0, 0, 10, 10,
@@ -4813,7 +5448,7 @@ class DshGui(object):
     VK_CONTROL, VK_SHIFT = 0x11, 0x10
     EM_GETSEL, EM_GETLINECOUNT, EM_REPLACESEL = 0x00B0, 0x00BA, 0x00C2
     EM_SETSEL, EM_SCROLLCARET = 0x00B1, 0x00B7
-    EM_LINESCROLL, EM_GETFIRSTVISIBLELINE = 0x00B6, 0x00CE
+    EM_LINESCROLL, EM_GETFIRSTVISIBLELINE, EM_SETLIMITTEXT = 0x00B6, 0x00CE, 0x00C5
     # 虚拟键码：**每一个都要在这里定义**。v1.1.2 一直在用 self.VK_ESCAPE 却没定义，
     # 按键处理第一行就抛 AttributeError，被 ctypes 回调静默吞掉 ——
     # 结果"回车发送 / Esc 打断 / F1..F8 / Ctrl 系列"全部失效（用户反馈的 Esc 失效就是这个）。
@@ -4822,7 +5457,7 @@ class DshGui(object):
     VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 0x25, 0x26, 0x27, 0x28
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8 = (
         0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77)
-    VK_J, VK_C, VK_D, VK_L, VK_O, VK_S = 0x4A, 0x43, 0x44, 0x4C, 0x4F, 0x53
+    VK_J, VK_C, VK_D, VK_L, VK_O, VK_S, VK_P = 0x4A, 0x43, 0x44, 0x4C, 0x4F, 0x53, 0x50
     GWLP_WNDPROC = -4
     ID_OUTPUT, ID_INPUT, ID_SEND = 1001, 1002, 1003
     ID_SELFTEST, ID_SHELLCHECK, ID_SETUP = 1004, 1005, 1006
@@ -4830,9 +5465,9 @@ class DshGui(object):
     ID_MODEL, ID_STOP = 1011, 1012
     # 菜单项 ID（避开控件 ID）
     MENU_NEW, MENU_SAVE, MENU_COPY, MENU_EXIT = 2001, 2002, 2003, 2004
-    MENU_OPEN_SESSION = 2005
+    MENU_OPEN_SESSION, MENU_SEND_IMAGE = 2005, 2006
     MENU_SELFTEST, MENU_SHELLCHECK, MENU_OPEN_DIAG, MENU_OPENLOG, MENU_CLEARLOG, MENU_EXTRACT_PWSH = 2101, 2102, 2103, 2104, 2105, 2106
-    MENU_MODEL, MENU_SETUP, MENU_OPENCWD, MENU_REASONING = 2201, 2202, 2203, 2204
+    MENU_MODEL, MENU_SETUP, MENU_OPENCWD, MENU_REASONING, MENU_VISION = 2201, 2202, 2203, 2204, 2205
     MENU_GUIDE, MENU_ABOUT = 2301, 2302
     TIMER_ID = 1
 
@@ -5004,8 +5639,11 @@ class DshGui(object):
 
         self.controls["output"] = u.CreateWindowExW(
             0, "EDIT", "", edit, 0, 0, 10, 10, self.hwnd, self.ID_OUTPUT, None, None)
+        # 解除 Windows 原生 EDIT 控件默认 32KB (32767 字符) 上限，允许最大 2GB 文本（彻底修复上万字后新字符不显示的 BUG 1）
+        u.SendMessageW(self.controls["output"], self.EM_SETLIMITTEXT, 0, 0)
         self.controls["input"] = u.CreateWindowExW(
             0, "EDIT", "", single | 0x0004, 0, 0, 10, 10, self.hwnd, self.ID_INPUT, None, None)
+        u.SendMessageW(self.controls["input"], self.EM_SETLIMITTEXT, 1000000, 0)
         # 只有"发送"留在对话区；自检/诊断/设置等全部收进菜单栏（常驻、不占地方、不影响对话）
         self.controls["send"] = u.CreateWindowExW(
             0, "BUTTON", "发送(&S)", button, 0, 0, 10, 10, self.hwnd, self.ID_SEND, None, None)
@@ -5026,16 +5664,18 @@ class DshGui(object):
         groups = (
             ("会话(&S)", (("新对话\tCtrl+L", self.MENU_NEW),
                           ("打开会话…\tCtrl+O", self.MENU_OPEN_SESSION),
-                          ("保存会话\tCtrl+S", self.MENU_SAVE), None,
+                          ("保存会话\tCtrl+S", self.MENU_SAVE),
+                          ("发送图片…\tCtrl+P", self.MENU_SEND_IMAGE), None,
                           ("复制全部\tF8", self.MENU_COPY), None, ("退出\tCtrl+D", self.MENU_EXIT))),
-            ("工具(&T)", (("离线自检（85 项）\tF5", self.MENU_SELFTEST),
+            ("工具(&T)", (("离线自检（93 项）\tF5", self.MENU_SELFTEST),
                           ("pwsh 诊断\tF6", self.MENU_SHELLCHECK),
                           ("释放/检查自带 PowerShell 7", self.MENU_EXTRACT_PWSH), None,
                           ("打开诊断日志", self.MENU_OPEN_DIAG),
                           ("打开界面日志", self.MENU_OPENLOG), None,
                           ("清空界面日志", self.MENU_CLEARLOG))),
             ("设置(&C)", (("选择模型\tF3", self.MENU_MODEL), ("接口与密钥\tF2", self.MENU_SETUP),
-                          ("显示思考过程\tF4", self.MENU_REASONING), None,
+                          ("显示思考过程\tF4", self.MENU_REASONING),
+                          ("支持图片输入(&V)", self.MENU_VISION), None,
                           ("打开工作目录", self.MENU_OPENCWD))),
             ("帮助(&H)", (("操作指南\tF1", self.MENU_GUIDE), ("关于", self.MENU_ABOUT))),
         )
@@ -5051,6 +5691,70 @@ class DshGui(object):
         u.SetMenu(self.hwnd, bar)
         self.menu_bar = bar
         self._sync_reasoning_menu()
+        self._sync_vision_menu()
+
+    def _sync_reasoning_menu(self):
+        """把"显示思考过程"的勾选状态跟配置对齐。"""
+        if not getattr(self, "menu_bar", None):
+            return
+        checked = 0x00000008 if self.config.get("show_reasoning") else 0x00000000   # MF_CHECKED
+        self.user32.CheckMenuItem(self.menu_bar, self.MENU_REASONING, checked)
+
+    def _sync_vision_menu(self):
+        """把"支持图片输入"的勾选状态跟配置对齐。"""
+        if not getattr(self, "menu_bar", None):
+            return
+        checked = 0x00000008 if self.config.get("support_vision", True) else 0x00000000   # MF_CHECKED
+        self.user32.CheckMenuItem(self.menu_bar, self.MENU_VISION, checked)
+
+    def _toggle_vision(self):
+        """菜单：开启/关闭图片读取与视觉支持（写进配置文件）。"""
+        enabled = not bool(self.config.get("support_vision", True))
+        self.config["support_vision"] = enabled
+        self._sync_vision_menu()
+        note = ""
+        try:
+            save_config_file(self.config_file, self.config)
+            note = "（已写入配置）"
+        except Exception as exc:
+            note = "（写配置失败：%s）" % exc
+        self.push_line("● 支持图片输入（视觉能力）：%s%s" % ("开" if enabled else "关", note))
+
+    def _send_image_dialog(self):
+        """发送图片对话框：输入本地图片路径和提示词，自动以 OpenAI 格式发送给模型分析。"""
+        if self.busy:
+            self.push_line("! 上一轮还在执行，请稍后再试或按 Esc 打断。")
+            return
+        if not self.config.get("support_vision", True):
+            self.push_line("! 当前未开启图片读取支持：请先在菜单「设置」中勾选「支持图片输入」")
+            return
+
+        img_path = _GuiInputDialog.ask(
+            self, "发送图片分析", "本地图片路径（支持 PNG / JPG / WEBP / GIF / BMP）：",
+            "", secret=False, check_type=None)
+        if not img_path or not img_path.strip():
+            return
+        img_path = img_path.strip().strip('"').strip("'")
+        if not os.path.isfile(img_path):
+            self.push_line("! 图片文件不存在：%s" % img_path)
+            return
+        if not is_image_path(img_path):
+            self.push_line("! 不支持的文件格式（仅支持 png/jpg/jpeg/webp/gif/bmp）：%s" % img_path)
+            return
+
+        prompt = _GuiInputDialog.ask(
+            self, "分析提示词", "请输入对这张图片的分析要求（可留空，默认：请分析这张图片）：",
+            "请详细分析并描述这张图片的内容", secret=False, check_type=None)
+        if prompt is None:
+            return
+        prompt = prompt.strip() or "请详细分析并描述这张图片的内容"
+
+        self.push("\n› [图片: %s] %s\n" % (os.path.basename(img_path), prompt))
+        self._set_busy(True)
+        self.cancel_event = threading.Event()
+        thread = threading.Thread(target=self._worker, args=(prompt,), kwargs={"images": [img_path]})
+        thread.daemon = True
+        thread.start()
 
     def _sync_reasoning_menu(self):
         """把"显示思考过程"的勾选状态跟配置对齐。"""
@@ -5162,6 +5866,10 @@ class DshGui(object):
                     self._open_guide()
                 elif cid == self.MENU_ABOUT:
                     self._about()
+                elif cid == self.MENU_VISION:
+                    self._toggle_vision()
+                elif cid == self.MENU_SEND_IMAGE:
+                    self._send_image_dialog()
                 return 0
             if msg == self.WM_CLOSE:
                 self._shutdown()
@@ -5285,6 +5993,9 @@ class DshGui(object):
             return True
         if ctrl and key == self.VK_O:                  # Ctrl+O 打开会话
             self._open_session_dialog()
+            return True
+        if ctrl and key == self.VK_P:                  # Ctrl+P 发送图片分析
+            self._send_image_dialog()
             return True
         if key in (self.VK_UP, self.VK_DOWN):          # ↑ / ↓ 翻历史输入
             if self._history_step(-1 if key == self.VK_UP else 1):
@@ -5622,7 +6333,7 @@ class DshGui(object):
 
     # ---- 对话 ----
 
-    def _worker(self, text):
+    def _worker(self, text, images=None):
         try:
             stripped = text.strip()
             if stripped in ("/models", "/model"):
@@ -5637,7 +6348,7 @@ class DshGui(object):
                 handle_command(text, self.config, self.theme, adapter, self.agent, self.shell,
                                self.session_path, _GuiReader())
             else:
-                self.agent.run_turn(text, cancel=self.cancel_event)
+                self.agent.run_turn(text, cancel=self.cancel_event, images=images)
                 if self.session_path:
                     save_session(self.session_path, self.agent, self.config)
         except ApiError as exc:

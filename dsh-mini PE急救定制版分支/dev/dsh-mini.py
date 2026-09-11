@@ -3863,6 +3863,17 @@ def run_selftest():
 
         # ---- 显示宽度 ----
         check("中文宽度计算", display_width("中文") == 4 and display_width("ab") == 2)
+
+        # ---- GuiEmitter 精炼显示与文件内容不倾倒自检（BUG 2 / BUG 3） ----
+        emitter_stub = _StubGui()
+        gui_emit = GuiEmitter(emitter_stub, {"show_live_output": True})
+        big_file_content = "\n".join("line %d" % i for i in range(200))
+        gui_emit.on_tool_start("str_replace_editor", {"command": "view", "path": "test.txt"})
+        gui_emit.on_tool_end("str_replace_editor", big_file_content, 0.1, False)
+        view_out = "".join(emitter_stub.parts)
+        check("GuiEmitter view 读文件不倾倒文件内容到界面",
+              "已读取文件内容，共 200 行" in view_out and "line 50" not in view_out,
+              view_out)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -4591,7 +4602,9 @@ class GuiEmitter(Emitter):
     排版规则（每条都对应一次"回车"）：
       * 每块内容自带结尾换行，块与块之间还额外空一行；
       * 模型正文：● 开头；思维链：… 开头（灰色无法用在 Edit 上，用前缀区分）；
-      * 工具调用：» 名字 + 缩进的命令；实时输出：│ 开头；结束：√/× + 耗时。
+      * 工具调用：» 名字 + 智能精简摘要；实时输出：│ 开头（超长自动折叠）；
+      * 读写文件与命令结果：完成确认与统计（不倾倒大段文件内容与冗长输出）；
+      * 结束：√/× + 耗时。
     注意：Windows 的 EDIT 控件只认 CRLF，这些换行最终由 DshGui.push 统一转成 \r\n。
     """
 
@@ -4600,6 +4613,10 @@ class GuiEmitter(Emitter):
         self.show_reasoning = bool(config.get("show_reasoning", True))
         self.live_output = bool(config.get("show_live_output", True))
         self._mode = None
+        self._live_lines = 0
+        self._live_truncated = False
+        self._current_tool = None
+        self._current_args = None
 
     def _end_block(self):
         if self._mode is not None:
@@ -4625,32 +4642,122 @@ class GuiEmitter(Emitter):
 
     def on_tool_start(self, name, args):
         self._end_block()
+        self._current_tool = name
+        self._current_args = args or {}
+        self._live_lines = 0
+        self._live_truncated = False
+
         if name == "pwsh":
-            command = str(args.get("command") or "").rstrip()
+            command = str(args.get("command") or "").strip()
+            lines = command.splitlines() if command else []
             self.gui.push("» pwsh\n")
-            for line in (command.splitlines() or [""]):
-                self.gui.push("    " + line.rstrip() + "\n")
+            if len(lines) <= 2:
+                for line in lines:
+                    line_str = line.rstrip()
+                    if len(line_str) > 160:
+                        line_str = line_str[:160] + "…"
+                    self.gui.push("    " + line_str + "\n")
+            else:
+                for line in lines[:2]:
+                    line_str = line.rstrip()
+                    if len(line_str) > 160:
+                        line_str = line_str[:160] + "…"
+                    self.gui.push("    " + line_str + "\n")
+                self.gui.push("    …（脚本共 %d 行，其余已折叠）\n" % len(lines))
         elif name == "str_replace_editor":
-            self.gui.push("» %s  %s  %s\n" % (name, args.get("command") or "?",
-                                              args.get("path") or "?"))
+            cmd = args.get("command") or "?"
+            path = args.get("path") or "?"
+            if cmd == "view":
+                vr = args.get("view_range")
+                range_str = " [第 %d~%d 行]" % (vr[0], vr[1]) if (isinstance(vr, (list, tuple)) and len(vr) == 2) else ""
+                if os.path.isdir(path):
+                    self.gui.push("» 浏览目录: %s\n" % path)
+                else:
+                    self.gui.push("» 读取文件: %s%s\n" % (path, range_str))
+            elif cmd == "create":
+                self.gui.push("» 创建文件: %s\n" % path)
+            elif cmd == "str_replace":
+                self.gui.push("» 编辑文件: %s (替换文本)\n" % path)
+            elif cmd == "insert":
+                self.gui.push("» 编辑文件: %s (在第 %s 行插入)\n" % (path, args.get("insert_line", "?")))
+            else:
+                self.gui.push("» 编辑文件: %s  %s\n" % (cmd, path))
         else:
-            self.gui.push("» %s  %s\n" % (name, json.dumps(args, ensure_ascii=False)[:200]))
+            self.gui.push("» %s  %s\n" % (name, json.dumps(args, ensure_ascii=False)[:120]))
         self.gui.set_status("执行工具…")
 
     def on_tool_output(self, chunk):
-        if self.live_output and chunk.strip():
-            for line in chunk.rstrip("\n").splitlines():
-                self.gui.push("  │ " + line + "\n")
+        if not self.live_output or not chunk or not chunk.strip():
+            return
+        if self._live_truncated:
+            return
+        lines = chunk.rstrip("\n").splitlines()
+        for line in lines:
+            if not line.strip():
+                continue
+            self._live_lines += 1
+            if self._live_lines > 8:
+                self.gui.push("  │ …（更多实时输出已省略，完整结果可在日志中查看）\n")
+                self._live_truncated = True
+                break
+            line_show = line.rstrip()
+            if len(line_show) > 200:
+                line_show = line_show[:200] + "…"
+            self.gui.push("  │ " + line_show + "\n")
 
     def on_tool_end(self, name, result, elapsed, is_error):
         self.gui.push("  %s %s · %s\n" % ("×" if is_error else "√",
                                           fmt_duration(elapsed), "失败" if is_error else "完成"))
         body = (result or "").strip("\r\n")
-        if body:
-            if len(body) > 4000:
-                body = body[:4000] + "\n…（界面只显示前 4000 字，完整内容见日志文件）"
-            for line in body.splitlines():
-                self.gui.push("  " + line.rstrip() + "\n")
+        args = self._current_args or {}
+
+        if is_error:
+            # 失败时输出错误原因摘要（最多 3 行）
+            err_lines = body.splitlines() if body else ["未知错误"]
+            for eline in err_lines[:3]:
+                self.gui.push("  ! " + eline[:200] + "\n")
+            if len(err_lines) > 3:
+                self.gui.push("  ! …（详细报错请查看界面日志）\n")
+        else:
+            # 成功时：区分工具类型，精炼显示，绝不倾倒大段文本
+            if name == "str_replace_editor":
+                cmd = args.get("command") or ""
+                if cmd == "view":
+                    # BUG 3 修复核心：绝不将整个文件的内容打印出来
+                    line_count = body.count("\n") + 1 if body else 0
+                    if "Here're the files and directories" in body:
+                        self.gui.push("  (已获取目录列表，模型已接收)\n")
+                    else:
+                        self.gui.push("  (已读取文件内容，共 %d 行，模型已接收)\n" % line_count)
+                elif cmd == "create":
+                    self.gui.push("  (文件创建成功)\n")
+                elif cmd in ("str_replace", "insert"):
+                    self.gui.push("  (文件修改成功)\n")
+                else:
+                    self.gui.push("  (操作成功完成)\n")
+            elif name == "pwsh":
+                # BUG 2 修复核心：已在 live_output 输出了则不重复打印；未输出时若较长则精简折叠
+                if self._live_lines > 0:
+                    pass
+                else:
+                    pwsh_lines = body.splitlines() if body else []
+                    if len(pwsh_lines) <= 3 and len(body) <= 300:
+                        for pline in pwsh_lines:
+                            self.gui.push("  " + pline.rstrip() + "\n")
+                    elif pwsh_lines:
+                        self.gui.push("  " + pwsh_lines[0][:160] + "\n")
+                        self.gui.push("  …（命令输出共 %d 行，已省略显示，完整内容见界面日志）\n" % len(pwsh_lines))
+                        if len(pwsh_lines) > 1:
+                            self.gui.push("  " + pwsh_lines[-1][:160] + "\n")
+            else:
+                other_lines = body.splitlines() if body else []
+                if len(other_lines) <= 2 and len(body) <= 200:
+                    for oline in other_lines:
+                        self.gui.push("  " + oline.rstrip() + "\n")
+                elif other_lines:
+                    self.gui.push("  " + other_lines[0][:160] + "\n")
+                    self.gui.push("  …（输出已折叠，完整内容见界面日志）\n")
+
         self._end_block()
         self.gui.set_status("就绪")
 
@@ -4749,6 +4856,7 @@ class _DiagWindow(object):
         edit = 0x40000000 | 0x10000000 | 0x00200000 | 0x00800000 | 0x0004 | 0x0040 | 0x0800
         button = 0x40000000 | 0x10000000 | 0x00010000
         self.controls["text"] = u.CreateWindowExW(0, "EDIT", "", edit, 0, 0, 10, 10, self.hwnd, 41, None, None)
+        u.SendMessageW(self.controls["text"], 0x00C5, 0, 0)
         for key, label, cid in (("copy", "复制全部", 42), ("save", "另存诊断文件", 43),
                                 ("clear", "清空", 44), ("close", "关闭", 45)):
             self.controls[key] = u.CreateWindowExW(0, "BUTTON", label, button, 0, 0, 10, 10,
@@ -5064,7 +5172,7 @@ class DshGui(object):
     VK_CONTROL, VK_SHIFT = 0x11, 0x10
     EM_GETSEL, EM_GETLINECOUNT, EM_REPLACESEL = 0x00B0, 0x00BA, 0x00C2
     EM_SETSEL, EM_SCROLLCARET = 0x00B1, 0x00B7
-    EM_LINESCROLL, EM_GETFIRSTVISIBLELINE = 0x00B6, 0x00CE
+    EM_LINESCROLL, EM_GETFIRSTVISIBLELINE, EM_SETLIMITTEXT = 0x00B6, 0x00CE, 0x00C5
     # 虚拟键码：**每一个都要在这里定义**。v1.1.2 一直在用 self.VK_ESCAPE 却没定义，
     # 按键处理第一行就抛 AttributeError，被 ctypes 回调静默吞掉 ——
     # 结果"回车发送 / Esc 打断 / F1..F8 / Ctrl 系列"全部失效（用户反馈的 Esc 失效就是这个）。
@@ -5256,8 +5364,10 @@ class DshGui(object):
 
         self.controls["output"] = u.CreateWindowExW(
             0, "EDIT", "", edit, 0, 0, 10, 10, self.hwnd, self.ID_OUTPUT, None, None)
+        u.SendMessageW(self.controls["output"], self.EM_SETLIMITTEXT, 0, 0)
         self.controls["input"] = u.CreateWindowExW(
             0, "EDIT", "", single | 0x0004, 0, 0, 10, 10, self.hwnd, self.ID_INPUT, None, None)
+        u.SendMessageW(self.controls["input"], self.EM_SETLIMITTEXT, 1000000, 0)
         # 只有"发送"留在对话区；自检/诊断/设置等全部收进菜单栏（常驻、不占地方、不影响对话）
         self.controls["send"] = u.CreateWindowExW(
             0, "BUTTON", "发送(&S)", button, 0, 0, 10, 10, self.hwnd, self.ID_SEND, None, None)

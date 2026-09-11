@@ -25,5 +25,6 @@
     "color": "auto",
     "show_reasoning": true,
     "save_sessions": false,
-    "show_live_output": true
+    "show_live_output": true,
+    "support_vision": true
 }

@@ -257,7 +257,7 @@
 七、全部命令一览
 ------------------------------------------------------------------------
   /help              显示帮助
-  /tools             列出可调用工具（pwsh、str_replace_editor）
+  /tools             列出可调用工具（pwsh、str_replace_editor、mouse_control、read_image、take_screenshot）
   /config            查看当前生效配置（密钥会打码显示，末行是 pwsh 实际状态）
   /shellcheck        离线诊断 pwsh（命令跑不动时先跑这个，把结果发出来即可定位）
   /models            扫描接口可用模型并切换（也可直接输入模型名）
@@ -283,10 +283,11 @@
   Ctrl+L / F7        新对话（清空显示）
   Ctrl+S             保存会话
   Ctrl+O             打开会话（多对话切换）
+  Ctrl+P             发送图片（弹出图片路径与提示词输入，按 OpenAI 视觉格式发图）
   Ctrl+A             全选（输出区里可全选后 Ctrl+C 复制）
   F1                 操作指南        F2  接口与密钥
   F3                 选择模型        F4  显示/隐藏思考过程
-  F5                 离线自检（80 项）  F6  pwsh 诊断
+  F5                 离线自检（96 项）  F6  pwsh 诊断
   F7                 新对话          F8  复制全部
   （自检/诊断的输出显示在独立窗口里，不会冲掉对话；
     两个窗口的内容分别写在 dsh-mini-diagnose.txt 和 dsh-mini-gui.log）
@@ -342,6 +343,7 @@
   show_reasoning    是否显示模型思维链（思考过程），默认 true；界面上按 F4 或
                     菜单「设置→显示思考过程」可随时切换，切换会写回配置文件
   save_sessions     是否自动保存会话（每轮写盘），默认 false；菜单/快捷键的保存、切换、退出保存不受它影响
+  support_vision    是否开启图片读取与 OpenAI 视觉格式多模态支持，默认 true（支持在菜单「设置」中随时勾选/切换）
 
 
 十一、常见问题
