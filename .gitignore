@@ -12,3 +12,7 @@ dsh-mini-gui.log
 __pycache__/
 *.py[cod]
 *.class
+# 本地操作规范与临时压测脚本（仅在本地保留，不同步至公共仓库）
+GitHub推送操作指南.md
+*推送操作指南*.md
+*2000lines*.py
