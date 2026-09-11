@@ -16,3 +16,6 @@ __pycache__/
 GitHub推送操作指南.md
 *推送操作指南*.md
 *2000lines*.py
+# 忽略所有 zip 压缩包（通过 GitHub Releases 分发，保持主仓库轻量纯净）
+*.zip
+**/*.zip
