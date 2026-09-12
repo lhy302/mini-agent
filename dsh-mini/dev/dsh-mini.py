@@ -492,10 +492,13 @@ def format_usage(usage):
              "completion=%s" % usage.get("completion_tokens"),
              "total=%s" % usage.get("total_tokens")]
     hit = usage.get("prompt_cache_hit_tokens")
+    if hit is None and isinstance(usage.get("prompt_tokens_details"), dict):
+        hit = usage["prompt_tokens_details"].get("cached_tokens")
     miss = usage.get("prompt_cache_miss_tokens")
     if hit is not None or miss is not None:
         parts.append("缓存命中=%s" % (0 if hit is None else hit))
-        parts.append("未命中=%s" % (0 if miss is None else miss))
+        if miss is not None:
+            parts.append("未命中=%s" % miss)
     return "  ".join(parts)
 
 
@@ -2955,6 +2958,8 @@ class Agent(object):
                 self._emit("on_notice", "模型输出被 max_tokens 截断（finish_reason=length）")
 
             history_message = {"role": "assistant", "content": assistant.get("content")}
+            if assistant.get("reasoning_content"):
+                history_message["reasoning_content"] = assistant["reasoning_content"]
             if assistant.get("tool_calls"):
                 history_message["tool_calls"] = assistant["tool_calls"]
             if history_message["content"] is None and not history_message.get("tool_calls"):
