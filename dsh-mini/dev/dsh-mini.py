@@ -766,13 +766,21 @@ def fetch_model_ids(config, timeout=10):
         data = json.loads(raw)
     except Exception:
         raise ApiError("模型列表不是合法 JSON：%s" % raw[:200])
-    items = data.get("data") if isinstance(data, dict) else None
+    items = None
+    if isinstance(data, dict):
+        items = data.get("data")
+        if items is None:
+            items = data.get("models")
+    elif isinstance(data, list):
+        items = data
     if not isinstance(items, list):
         raise ApiError("接口未按 OpenAI 兼容格式返回 data 列表")
     ids = []
     for item in items:
-        if isinstance(item, dict) and item.get("id"):
-            ids.append(str(item["id"]))
+        if isinstance(item, dict):
+            mid = item.get("id") or item.get("name") or item.get("model")
+            if mid:
+                ids.append(str(mid))
         elif isinstance(item, str):
             ids.append(item)
     return sorted(set(ids))
@@ -4505,6 +4513,8 @@ def gui_declare_apis(user32, gdi32, ctypes, wintypes):
     u.CreatePopupMenu.restype = w.HMENU
     u.AppendMenuW.argtypes = [w.HMENU, c.c_uint, c.c_size_t, w.LPCWSTR]
     u.AppendMenuW.restype = w.BOOL
+    u.CheckMenuItem.argtypes = [w.HMENU, c.c_uint, c.c_uint]
+    u.CheckMenuItem.restype = w.DWORD
     u.SetMenu.argtypes = [w.HWND, w.HMENU]
     u.SetMenu.restype = w.BOOL
     u.EnableWindow.argtypes = [w.HWND, w.BOOL]
@@ -6050,8 +6060,10 @@ class DshGui(object):
     # ---- 模型选择 ----
 
     def _request_models(self):
-        """点菜单里的"选择模型"：先扫描（只扫一次），扫完自动弹选择框。"""
-        if self.model_list is None and not self.model_error:
+        """点菜单里的"选择模型"：未扫描或上次扫描失败时重新扫描，扫完弹选择框。"""
+        if self.model_list is None or (not self.model_list and self.model_error):
+            self.model_error = ""
+            self.model_list = None
             self.set_status("正在扫描模型列表…")
             threading.Thread(target=self._fetch_models, daemon=True).start()
             return
@@ -6065,17 +6077,27 @@ class DshGui(object):
         except Exception as exc:
             self.model_list = []
             self.model_error = str(exc)
+        self.set_status("就绪")
         if self.hwnd:
             self.user32.PostMessageW(self.hwnd, self.WM_APP_PICKER, 0, 0)
 
     def _pick_model(self):
+        self.set_status("就绪")
+        current_model = str(self.config.get("model") or "")
+        items = list(self.model_list or [])
         if self.model_error:
             self.push_line("! 没能取到模型列表：%s" % self.model_error)
-            self.push_line("  可以直接在下面输入模型名（按 F3 随时再来）。")
-        if self.model_list:
-            self.push_line("● 可用模型（%d 个）：%s" % (len(self.model_list), "、".join(self.model_list[:30])))
-        chosen = _GuiChoiceDialog.ask(self, "选择模型", "双击列表里的模型，或直接在下面输入模型名",
-                                      self.model_list or [], self.config.get("model") or "")
+            self.push_line("  可以直接在下面输入模型名（按 F3 随时重试扫描）。")
+            label = "提示：未取到在线模型列表（可按 F3 重试），请直接在下方输入模型名："
+            if current_model and current_model not in items:
+                items.append(current_model)
+        else:
+            if self.model_list:
+                self.push_line("● 可用模型（%d 个）：%s" % (len(self.model_list), "、".join(self.model_list[:30])))
+            label = "双击列表里的模型，或直接在下面输入模型名"
+            if current_model and current_model not in items:
+                items.insert(0, current_model)
+        chosen = _GuiChoiceDialog.ask(self, "选择模型", label, items, current_model)
         self.set_status("就绪")
         if not chosen:
             return
@@ -6088,6 +6110,7 @@ class DshGui(object):
         except Exception as exc:
             note = "（写配置失败：%s）" % exc
         self.push_line("● 模型已切换为 %s%s" % (chosen, note))
+        self.set_status("就绪")
 
     # ---- 对话 ----
 
