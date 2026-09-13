@@ -1,13 +1,25 @@
 ========================================================================
   DSH 极简 Agent（dsh-mini）操作指南
   适用：Linux x86_64（Ubuntu / Debian / CentOS / Fedora 等发行版）
+  核心定位：纯净 Linux 环境的“种子引导安装跳板” & 轻量日常本地 Agent
 ========================================================================
 
-一、它是什么
+一、它是什么与核心定位
 ------------------------------------------------------------------------
-一个单文件、零依赖、双击即开的 Linux 本地 Agent，功能与 DSH 的「极简模式」完全对齐，
-提供面向 AI 自主调用的完整工具集：
-  1) pwsh / bash          持久 Linux Shell 会话（环境变量、cd 工作目录跨调用保持）
+一个单文件、零依赖、双击即开的 Linux 本地 Agent，功能与 DSH 的「极简模式」完全对齐。
+
+【核心定位：Linux 环境下彻底降低 Agent 安装门槛】
+在全新的 Linux 系统或裸机服务器上，安装部署像 DSH 完整版、Claude Code 等重型
+智能体，通常需要先安装 Python 3.12+、Node.js 18+、Git、配置 npm 镜像和环境变量，
+步骤多、容易因依赖缺失而报错。
+dsh-mini Linux 专用版是独立单文件程序，无需系统提前安装 Python 或任何依赖包，
+双击桌面图标即开。你可以直接让它充当「种子引导员」：
+输入“请在这台 Linux 电脑上帮我下载并安装配置 DSH 完整版环境”或“帮我安装 Node.js 和 Git”，
+dsh-mini 将自主调用底层 bash/pwsh 会话执行包管理、下载、安装与环境配置，
+全自动帮你把重量级 Agent 环境搭建好！
+
+【面向 AI 自主调用的完整工具集】
+  1) pwsh / bash          持久 Linux Shell 会话（执行命令、包管理安装、环境配置）
   2) str_replace_editor   文件编辑器（view / create / str_replace / insert，支持 Linux 绝对路径）
   3) mouse_control        鼠标自主控制（move / click / double_click / down / up / scroll / position）
   4) read_image           自主读取本地图片送入多模态视觉分析（支持 PNG / JPG / WEBP / GIF / BMP）

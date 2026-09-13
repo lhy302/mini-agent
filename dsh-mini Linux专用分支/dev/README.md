@@ -9,6 +9,7 @@
 
 | 项目 | 内容 |
 |---|---|
+| **核心定位** | **Linux 环境下的种子引导 Agent（Seed / Bootstrapper Agent）**：在无任何开发环境的纯净 Linux 机器上，双击即开，自主执行 bash 脚本全自动配置环境并安装部署重型 Agent；亦可作为独立的轻量日常 Agent |
 | **运行方式** | **单文件且双击即开**：桌面图标 `dsh-mini.desktop`、启动器 `start-dsh-mini.sh` 或单文件程序 `dsh-mini` |
 | **界面体系** | **原生图形界面（唯一主界面）**：菜单栏 + 滚动对话区 + 自增高多行输入框 + 状态栏，无控制台黑框 |
 | **可调用工具** | 全部面向 AI 自主调用：`pwsh/bash`（命令执行）、`str_replace_editor`（文件编辑）、`mouse_control`（鼠标控制）、`read_image`（自主读图多模态分析）、`take_screenshot`（自主截屏分析） |

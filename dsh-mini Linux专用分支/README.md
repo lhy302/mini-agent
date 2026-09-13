@@ -1,23 +1,44 @@
 # DSH 极简 Agent（dsh-mini）v1.2.0 - Linux 专用分支
 
-一个 **单文件、零依赖、复制即用、双击即开** 的 Linux 本地 Agent，功能与 DSH 的「极简模式（minimal）」完全对齐。
+> **单文件、零依赖、即开即用的 Linux 本地 Agent —— 专为纯净 Linux 环境降低 Agent 部署门槛打造的“种子引导器”**
 
 | 项目 | 内容 |
 |---|---|
-| 运行方式 | **单文件且双击即开**：桌面图标 `dsh-mini.desktop` 或直接执行 `dsh-mini` 单文件二进制 |
+| 核心定位 | **Linux 环境下的种子引导 Agent（Seed / Bootstrapper Agent）**：针对完全未配置开发环境或未安装 Agent 的纯净 Linux（Ubuntu/Debian/CentOS/国产OS等），通过单文件双击即开，自主执行 bash 命令全自动配置环境并安装部署重型 Agent；亦可作为独立的轻量日常 Agent |
+| 运行方式 | **单文件且双击即开**：桌面图标 `dsh-mini.desktop` 或直接执行 `dsh-mini` 单文件二进制（无需安装 Python） |
 | 界面 | **原生图形界面**：菜单栏 + 对话区 + 多行输入框 + 状态栏，支持完整快捷键与模态对话框 |
-| 可调用工具 | 全部面向 AI 自主调用：`pwsh/bash`（持久化 Shell 命令执行）、`str_replace_editor`（文件查看创建编辑）、`mouse_control`（鼠标自主操作）、`read_image`（自主读图送入多模态分析）、`take_screenshot`（自主截屏分析 GUI） |
+| 可调用工具 | 全部面向 AI 自主调用：`bash/pwsh`（持久化 Shell 命令执行、环境安装与脚本运行）、`str_replace_editor`（文件查看创建编辑）、`mouse_control`（鼠标操作）、`read_image`（读图视觉分析）、`take_screenshot`（屏幕截图分析） |
 | 接口协议 | 支持 OpenAI Chat Completions（文本与 Vision 多模态图片格式），可自由开启/关闭视觉支持 |
-| 运行环境 | Linux x86_64（Ubuntu 22.04/24.04/26.04 等主流发行版），**目标机器无需安装 Python、无需任何第三方外部依赖** |
+| 运行环境 | Linux x86_64（Ubuntu 20.04/22.04/24.04、Debian、Fedora、Arch、Deepin 等），**目标机器无需安装 Python、无需任何第三方依赖** |
 | 源码与构建 | 单文件 `dev/dsh-mini.py`（Python 3.8+），支持一键打包脚本 `dev/build-linux.sh` |
 
 ---
 
-## 一、双击即开与快速上手
+## 一、为什么需要 Linux 专用分支？
+
+### 1. 彻底解决 Linux 下 Agent 环境搭建的高门槛
+在一台全新的 Linux 服务器或纯净桌面系统上，想要安装部署像 DSH 完整版、Claude Code 等重型 Agent，过程通常极为繁琐：
+* 需要确认 glibc、Python 3.12+、Node.js 18+ 环境；
+* 需要配置各种 APT / DNF 源、npm 镜像、代理或 SSH 权限；
+* 遇到构建依赖报错时需要繁琐排查。
+
+**`dsh-mini Linux 专用版` 彻底打破了这个僵局**：
+* 本程序是独立编译的单文件 Linux 二进制包，已打包好所有依赖，**目标机器完全不需要先装好 Python 或 pip**！
+* 双击桌面快捷方式 `dsh-mini.desktop` 或终端运行 `./dsh-mini` 即刻唤起。
+* 你只需输入 API Key，然后直接下达任务：
+  > *“帮我在这台 Ubuntu 服务器上安装并配置完整的 DSH Agent 环境，包含 Node.js、Git 和必要依赖”*
+* `dsh-mini` 将利用其自带的持久化 `bash` 会话，**自主跑命令、解决依赖、下载包、配置环境变量，全自动帮你把完整的重型 Agent 搭好！**
+
+### 2. 轻量独立的日常本地运维 Agent
+在不需要开笨重浏览器或重型开发框架的场景下，单文件秒开，内存占用低，即可提供流畅的命令执行、文本编辑和多模态图像识别能力。
+
+---
+
+## 二、双击即开与快速上手
 
 1. **双击即开**：
    - 直接双击桌面上的 **`dsh-mini.desktop`** 图标，即可直接启动图形界面。
-   - 或者在文件管理器中双击单文件程序 **`dsh-mini`**（或执行 `./dsh-mini`）。
+   - 或者在文件管理器中双击单文件程序 **`dsh-mini`**（或在终端执行 `./dsh-mini`）。
 2. **首次启动自动弹出配置向导**：
    - 光标已在输入框内，输入「接口地址 base_url」（回车） -> 输入「API Key」（回车） -> 自动扫描并弹出模型列表（选择模型即可开始）。
    - 以后想修改配置可随时按 **F2**（接口与密钥）或 **F3**（选择模型）。
@@ -29,7 +50,7 @@
 
 ---
 
-## 二、快捷键与菜单
+## 三、快捷键与菜单
 
 ### 快捷键
 
@@ -61,7 +82,7 @@
 
 ---
 
-## 三、目录结构
+## 四、目录结构
 
 ```text
 dsh-mini Linux专用分支/
@@ -70,7 +91,7 @@ dsh-mini Linux专用分支/
 ├── start-dsh-mini.sh    # 终端启动脚本
 ├── dsh-mini.config.json # 配置文件（初次运行自动生成）
 ├── 操作指南.txt         # 详细图文操作教程
-├── 更新说明.txt         # Linux 专用分支改造说明
+├── 更新说明.txt         # Linux 专用分支说明
 ├── README.md            # 项目说明文档
 └── dev/                 # 开发与打包目录
     ├── dsh-mini.py      # 单文件完整源码
@@ -83,7 +104,7 @@ dsh-mini Linux专用分支/
 
 ---
 
-## 四、从源码重新打包
+## 五、从源码重新打包
 
 如果修改了 `dev/dsh-mini.py`，可以直接使用一键打包脚本：
 

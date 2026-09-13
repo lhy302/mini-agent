@@ -1,32 +1,38 @@
 # DSH 极简 Agent（dsh-mini）v1.2.0 Win7 深度定制版
 
-一个 **单文件、零依赖、复制即用** 的本地 Agent，功能与 DSH 的「极简模式（minimal）」对齐。
+> **老旧与受限系统保底方案：在完全无法安装正常 Agent 的 Windows 7 环境中，提供最低限度但稳定可用的本地 Agent 自动化能力**
 
 | 项目 | 内容 |
 |---|---|
-| 界面 | **图形界面（唯一界面）**：菜单栏 + 对话区 + 输入框，纯 Win32 控件（ctypes），无控制台黑框 |
-| 可调用工具 | 全部面向 AI 自主调用：`pwsh`（命令执行）、`str_replace_editor`（文件查看编辑）、`mouse_control`（鼠标自主控制）、`read_image`（自主读图送入多模态分析）、`take_screenshot`（自主截屏分析 GUI） |
+| 核心定位 | **老旧受限环境保底 Agent（Fallback / Survival Agent）**：针对 Windows 7 等现代重型 Agent（Node.js 18+、WebView2、Electron、Python 3.10+）彻底无法安装运行的严苛老系统，提供最低限度、单文件零依赖的自主 Shell 执行与文件编辑能力 |
+| 界面 | **图形界面（唯一界面）**：菜单栏 + 对话区 + 输入框，纯 Win32 原生 Unicode 控件（ctypes），彻底根治 Win7 控制台 cp936 编码崩溃与字体变异问题 |
+| 可调用工具 | 全部面向 AI 自主调用：`pwsh`（命令执行与系统运维）、`str_replace_editor`（文件查看编辑）、`mouse_control`（鼠标自主控制）、`read_image`（自主读图视觉分析）、`take_screenshot`（自主截屏分析） |
 | 接口协议 | 支持 OpenAI Chat Completions（文本与 Vision 多模态图片格式），可自由开启/关闭视觉支持 |
-| 运行环境 | Windows 7 SP1 及以上（64 位），**目标机器无需安装 Python、无需任何依赖** |
-| Win7 深度定制 | **内嵌稳定版 PowerShell 7**、同目录自动解压、强制绑定调用、专属 Win7 系统提示词与详细环境规格 |
+| 运行环境 | Windows 7 SP1 及以上（64 位），**目标机器无需安装 Python、无需任何前置依赖** |
+| Win7 深度定制 | **内嵌稳定版 PowerShell 7**、同目录自动解压、强制绑定调用、专属 Win7 系统提示词与详细环境规格；旧版 PS2.0 自动降级适配 |
 | 源码 | 单文件 `dev/dsh-mini.py`，只用 Python 标准库，无第三方依赖，无网络回传 |
 
-> **为什么只有图形界面**：Win7 的控制台是旧式实现，除了编码崩溃（v1.0.2 修复），
-> 还有「中文显示成两个」「字体突然变大」这类**渲染层**的怪现象，程序管不着。
-> GUI 用 Edit 控件（Unicode 原生）绕开整个控制台，并把界面每一行写进
-> `dsh-mini-gui.log`，所以「命令到底有没有执行成功」看日志最准。
+---
 
+## 一、为什么需要 Win7 深度定制版？
 
-## 一、直接用
+在工控、医疗、老旧办公与专有生产设备中，仍有大量系统停留在 Windows 7 SP1。
+然而，现代主流 Agent 系统（如 DSH 完整版、Claude Code、Cursor/OpenCode 等）普遍重度依赖高版本 Node.js (>=18)、Chromium 内核、WebView2 或 Python 3.10+，在 Windows 7 上**安装程序直接报错拒绝运行，甚至系统底层缺少 API 而完全无法启动**。
 
-1. 把 **`dsh-mini.exe`** 单独复制到任意机器（U 盘、桌面都行），双击运行。
-2. **第一次使用会自己弹出设置**：光标已经在输入框里，直接填「接口地址」，回车 → 填「API Key」，
-   回车 → 自动接着弹出模型列表（来自接口的 `/models`，也可以直接手输模型名；取消=保持当前）。
-   以后想改随时按 **F2**（或菜单 设置 → 接口与密钥）。
+**`dsh-mini-win7 深度定制版` 正是为打破这一绝境而生**：
+1. **解决运行时缺失**：自带 Universal CRT 运行库补丁（downlevel dlls），干净 Win7 SP1 无需安装补丁也能直接启动 Python 3.8 运行时；
+2. **解决 Shell 老旧卡死**：Win7 自带的 PowerShell 2.0 存在管道死锁与语法陈旧问题，本版**内嵌免安装 PowerShell 7 核心包**，启动即自动解压绑定，同时具备 PS2.0 单命令降级兼容兜底；
+3. **解决控制台乱码崩溃**：通过纯 Win32 原生控件构建 GUI，完全避开 Win7 命令提示符 GBK 编码崩溃，提供最可靠的交互界面；
+4. **提供最低限度但全自主的 Agent 能力**：即便在无法运行任何现代软件的环境下，AI 依然能通过 `pwsh` 执行批处理命令、通过 `str_replace_editor` 查改配置文件、排查系统故障与日志。
+
+---
+
+## 二、直接用
+
+1. 把 **`dsh-mini.exe`** 单独复制到 Windows 7 机器（U 盘、桌面都行），双击运行。
+2. **第一次使用会自己弹出设置**：光标已经在输入框里，直接填「接口地址」，回车 → 填「API Key」，回车 → 自动接着弹出模型列表（来自接口的 `/models`，也可以直接手输模型名；取消=保持当前）。以后想改随时按 **F2**（或菜单 设置 → 接口与密钥）。
 3. 在最下面的输入框里打字，**回车发送**。
-   模型的**思考过程**会实时显示出来（`…` 开头，真的在"想"的时候能看到，觉得跑偏了就按 `Esc`
-   或点「停止」按钮打断）；正文以 `●` 开头。每轮回复后还会显示 token 用量与（缓存命中/未命中）：
-   多轮工具调用时前缀不变的部分走服务端缓存（DeepSeek 系约 1/10 计价），token 消耗可控。
+   模型的**思考过程**会实时显示出来（`…` 开头，按 `Esc` 或点「停止」按钮打断）；正文以 `●` 开头。每轮回复后还会显示 token 用量与缓存命中情况。
    命令执行过程会实时显示：`» pwsh` + 命令 + 实时输出 + `√/× 完成/失败` + 命令真实输出。
 4. 配置保存在 exe 同目录的 `dsh-mini.config.json`（便携模式；目录只读时自动改用 `%APPDATA%\dsh-mini\`）。
 
@@ -48,7 +54,6 @@
 
 * **会话(S)**：新对话 / 打开会话…（多对话切换，切换前自动保存当前会话）/ 保存会话 / 发送图片… / 复制全部 / 退出
 * **工具(T)**：离线自检（96 项）/ pwsh 诊断 / 释放/检查自带 PowerShell 7 / 打开诊断日志 / 打开界面日志 / 清空界面日志
-  —— 自检与诊断的输出在**独立窗口**里，同时写入 `dsh-mini-diagnose.txt`，不会冲掉对话
 * **设置(C)**：选择模型（自动扫描 `/models` + 可手输）/ 接口与密钥 / 显示思考过程（勾选开关）/ 支持图片输入（视觉开关） / 打开工作目录
 * **帮助(H)**：操作指南 / 关于
 
@@ -57,101 +62,27 @@
 
 完整用法见 **`操作指南.txt`**；本版改动见 **`更新说明.txt`**。
 
+---
 
-## 二、这个目录里有什么
+## 三、这个目录里有什么
 
 | 文件 | 作用 |
 |---|---|
 | `dsh-mini.exe` | **程序本体**（图形界面，唯一版本） |
-| `pwsh/` | 自带稳定版 PowerShell 7 运行环境 |
+| `pwsh/` | 自带稳定版 PowerShell 7 运行环境（内嵌自动解压） |
 | `操作指南.txt` | 完整使用教程（菜单、快捷键、配置、常见问题） |
 | `更新说明.txt` | v1.2.0 更新说明与 Win7 排查指引 |
 | `dsh-mini.config.json` | 配置模板（`api_key` 留空，首次运行会让你填） |
 | `dev/` | 源码与打包脚本（不影响运行，可以删） |
 
-运行后按需生成：`sessions\`（保存的会话）、`dsh-mini-gui.log`（界面全量日志）、
-`dsh-mini-diagnose.txt`（自检/诊断输出）、`dsh-mini-error.log`（只在崩溃时生成）。
+---
 
-`dev/` 子目录：
+## 四、从源码打包（Windows 7 打包机）
 
-| 文件 | 作用 |
-|---|---|
-| `dsh-mini.py` | **源码**（单文件，Python 3.8+，仅标准库） |
-| `gui-e2e.py` | GUI 端到端测试（48 项断言，假网关，不联网） |
-| `real-api-test.py` | 真实接口端到端测试（用你自己的网关跑一遍全流程） |
-| `check-constants.py` | 静态检查：self.XXX 有没有漏定义（快捷键失效那类坑） |
-| `dsh-mini.spec` | PyInstaller 配置（`console=False`，打出来就是无控制台的 GUI） |
-| `dsh-mini.version.txt` | 版本资源（写进 exe 属性） |
-| `build-win7-exe.bat` | 一键打包 |
-| `dsh-mini.config.example.json` | 配置示例（全部字段） |
-| `start-dsh-mini.cmd` | 未打包时用源码启动的启动器 |
-| `清理工具.cmd` | 双击即用的清理工具（清配置/会话/日志） |
-| `README.md` | 开发与技术文档（Win7 兼容原理、协议细节、验证记录） |
-
-
-## 三、自己从源码打包
-
-需要 **Python 3.8.x**（3.8 是最后一个支持 Windows 7 的 Python）：
+需要 **Python 3.8.x**（3.8 是最后一个官方支持 Windows 7 的 Python 版本）：
 
 ```bat
 dev\build-win7-exe.bat
 ```
 
-脚本会自动安装 `pyinstaller==5.13.2`（PyInstaller 6.x 已放弃 Win7），
-按 `dev\dsh-mini.spec` 打成单文件无控制台 exe，输出到本目录。
-
-打包时会从打包机的 `C:\Windows\System32\downlevel` 收集 UCRT 运行库并塞进 exe，
-这是「复制到干净的 Windows 7 SP1 也能跑」的关键。
-
-直接跑源码也可以（无需打包）：
-
-```bat
-cd dev
-python dsh-mini.py
-```
-
-### 命令行参数（都会打开窗口并自动执行对应动作）
-
-```bat
-dsh-mini.exe                        :: 图形界面
-dsh-mini.exe --selftest             :: 开窗并自动跑 81 项自检
-dsh-mini.exe --shellcheck           :: 开窗并自动跑 pwsh 诊断
-dsh-mini.exe --models               :: 开窗并弹出模型选择
-dsh-mini.exe --setup                :: 开窗并打开接口与密钥设置
-dsh-mini.exe -p "提示词"            :: 开窗并自动发送这条消息
-dsh-mini.exe --config D:\my.json    :: 指定配置文件
-dsh-mini.exe --cwd D:\project       :: 指定工作目录
-dsh-mini.exe --model 名称           :: 指定模型
-```
-
-
-## 四、Windows 7 兼容史与深度定制（彻底解决命令行生态混乱）
-
-* **Win7 命令行版本混乱缺陷解决**：Windows 7 原生环境命令行生态极其碎片化（自带 2.0，
-  少数升级到 3.0/5.1 或仅有 cmd），严重缺少 modern cmdlet（如 ConvertFrom-Json、Invoke-RestMethod）、
-  编码极易崩溃、语法不兼容。本深度定制版直接将稳定且支持 Win7 的 PowerShell 7.4 绿色环境
-  与 UCRT/VC++ 运行库打包嵌在 exe 中：
-  * **同目录自动解压**：若程序同目录下未检测到已解压的命令行工具，首次运行自动解压至同目录 `pwsh\`；
-  * **强制绑定首选调用**：命令行候选列表与执行引擎强制绑定该自带稳定版 PowerShell 7；
-  * **系统提示词明确声明**：提示词中明确写入当前为 Windows 7 系统，并详细向 AI 阐述 PowerShell 7
-    运行环境与能力（现代操作符、JSON、管道、UTF-8 等），彻底杜绝 AI 编写命令时的版本困惑。
-* **v1.0.1**：Win7 SP1 自带 PowerShell 2.0，旧协议（`-Command -` + stdin）在 2.0 上
-  子进程毫无反应，每条命令卡到超时。改为自带 loader 协议 + 启动握手 +
-  失败自动降级「单命令模式」。
-* **v1.0.2**：Win7 控制台按 cp936 严格编码，界面里的 `»` `›` 不在 GBK 里，
-  一打印就 `UnicodeEncodeError` 崩掉。加输出层编码降级 + 崩溃日志。
-* **v1.0.3 / v1.1.0**：改用图形界面（Unicode 控件），不再经过控制台；
-  并补齐菜单、快捷键、模型选择、多会话切换。
-* 诊断：GUI 里菜单「工具 → pwsh 诊断」，会把候选 PowerShell、两种执行方式的
-  实测结果全部列出来（同时写入 `dsh-mini-diagnose.txt`）。
-
-
-## 五、杀软误报说明
-
-PyInstaller 打包的单文件 exe 偶尔会被 Windows Defender 之类的杀软按启发式误判
-（例如 `Trojan:Win32/Bearfoos.A!ml`，这是机器学习误报，不是真的报毒）。
-本项目已刻意去掉了容易被误判的特征：不使用 base64 解码执行、不读文件动态执行，
-并写入了正规的版本资源。
-
-若仍被拦截，把 exe 所在目录加入杀软白名单即可；也可以直接用上面的
-`dev\build-win7-exe.bat` 从源码自行重新打包 —— 源码全部公开可查。
+脚本会自动配置 `pyinstaller==5.13.2`，收集系统 `downlevel` UCRT 库并按规格打包成无控制台单文件 exe。

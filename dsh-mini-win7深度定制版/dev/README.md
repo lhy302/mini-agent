@@ -8,6 +8,7 @@
 
 | 项目 | 内容 |
 |---|---|
+| 核心定位 | **老旧受限环境保底 Agent（Fallback Agent）**：针对 Windows 7 等现代重型 Agent 无法安装运行的严苛老系统，提供最低限度但稳定可用的本地 Agent 自动化能力 |
 | 界面 | 图形界面（唯一界面，无控制台黑框）；TUI 相关代码保留用于源码调试 |
 | 可调用工具 | 只有 2 个：`pwsh`（持久 PowerShell 会话）、`str_replace_editor`（view / create / str_replace / insert） |
 | 接口协议 | 只支持常规 OpenAI Chat Completions（`POST {base_url}/chat/completions`，支持 SSE 流式） |
