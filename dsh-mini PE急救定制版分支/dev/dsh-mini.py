@@ -502,26 +502,26 @@ def fmt_duration(seconds):
 
 
 def format_usage(usage):
-    """把 usage 字典格式化成一行。
-
-    DeepSeek 系接口会带 prompt_cache_hit_tokens / prompt_cache_miss_tokens，
-    有就一起显示 —— 前缀缓存是否生效，看这两个数最直观（agent 的消息列表是
-    只追加的，system prompt 也保持稳定，所以多轮工具调用应该大量命中）。
-    """
+    """把 usage 字典格式化成中文说明行。"""
     if not isinstance(usage, dict):
         return ""
-    parts = ["prompt=%s" % usage.get("prompt_tokens"),
-             "completion=%s" % usage.get("completion_tokens"),
-             "total=%s" % usage.get("total_tokens")]
+    p_tok = usage.get("prompt_tokens")
+    c_tok = usage.get("completion_tokens")
+    t_tok = usage.get("total_tokens")
+    parts = [
+        "输入 %s" % (p_tok if p_tok is not None else 0),
+        "输出 %s" % (c_tok if c_tok is not None else 0),
+        "总计 %s" % (t_tok if t_tok is not None else 0)
+    ]
     hit = usage.get("prompt_cache_hit_tokens")
     if hit is None and isinstance(usage.get("prompt_tokens_details"), dict):
         hit = usage["prompt_tokens_details"].get("cached_tokens")
     miss = usage.get("prompt_cache_miss_tokens")
     if hit is not None or miss is not None:
-        parts.append("缓存命中=%s" % (0 if hit is None else hit))
+        parts.append("缓存命中 %s" % (0 if hit is None else hit))
         if miss is not None:
-            parts.append("未命中=%s" % miss)
-    return "  ".join(parts)
+            parts.append("未命中 %s" % miss)
+    return " · ".join(parts)
 
 
 # =============================================================================
@@ -3452,7 +3452,7 @@ class Tui(Emitter):
         self._close_reasoning()
         self._close_text()
         if self.usage:
-            self.line(self.theme.grey("  tokens: " + format_usage(self.usage)))
+            self.line(self.theme.grey("  [Token消耗] " + format_usage(self.usage)))
         self.usage = None
         self.line("")
 
@@ -4786,7 +4786,7 @@ class GuiEmitter(Emitter):
 
     def on_usage(self, usage):
         if usage:
-            self.gui.push("  tokens: %s\n" % format_usage(usage))
+            self.gui.push("  [Token消耗] %s\n" % format_usage(usage))
             self._end_block()
 
 

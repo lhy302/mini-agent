@@ -18,6 +18,13 @@ __pycache__/
 GitHub推送操作指南.md
 *推送操作指南*.md
 *2000lines*.py
+connect-ssh.cmd
+*connect-ssh*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.ppk
 
 # 本地运行时配置、会话记录与临时测试图片（防止泄露私有 Token 与测试数据）
 dsh-mini-v1.2.0/dsh-mini.config.json

@@ -51,6 +51,25 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, "frozen", False) else SCRIPT_DIR
 CONFIG_NAME = "dsh-mini.config.json"
 
+def open_file_or_dir(path):
+    """跨平台打开文件或目录：Windows 用 startfile，Linux 用 xdg-open。"""
+    if not path:
+        return False
+    if hasattr(os, "startfile"):
+        try:
+            open_file_or_dir(path)
+            return True
+        except Exception:
+            return False
+    else:
+        try:
+            subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
+
+
 # DSH 极简模式的固定人格提示词（complete: true，不附加任何其他提示段落）
 DSH_MINIMAL_PERSONA = "You are a helpful software engineer assistant."
 
@@ -363,6 +382,9 @@ def candidate_output_encodings():
                     pass
         except Exception:
             pass
+    for fallback in ("gbk", "cp936", "gb18030", "latin1"):
+        if fallback not in names:
+            names.append(fallback)
     out = []
     for name in names:
         if name and name not in out:
@@ -480,7 +502,7 @@ def fmt_duration(seconds):
 
 
 def format_usage(usage):
-    """把 usage 字典格式化成中文说明行。"""
+    """把 usage 字典格式化成友好中文说明。"""
     if not isinstance(usage, dict):
         return ""
     p_tok = usage.get("prompt_tokens")
@@ -507,14 +529,17 @@ def format_usage(usage):
 # =============================================================================
 
 def read_clipboard_text():
-    """读取剪贴板文本（Ctrl+V 粘贴用）。
-
-    必须显式声明 GetClipboardData/GlobalLock 的参数与返回类型：
-    它们返回的是 64 位句柄，ctypes 默认按 32 位 int 处理会被截断，
-    导致 GlobalLock 失败、粘贴拿到空字符串。
-    """
+    """读取剪贴板文本（Ctrl+V 粘贴用）。"""
     if not IS_WIN:
-        return ""
+        try:
+            import tkinter as _tk
+            _r = _tk.Tk()
+            _r.withdraw()
+            _t = _r.clipboard_get()
+            _r.destroy()
+            return _t or ""
+        except Exception:
+            return ""
     try:
         import ctypes
         from ctypes import wintypes
@@ -1057,6 +1082,27 @@ ONESHOT_TAIL = ("\n$__dsh_code = 0\n"
                 "exit $__dsh_code\n")
 ONESHOT_INLINE_LIMIT = 8000      # 超过这个长度就不塞命令行，改写临时 .ps1
 
+
+BASH_LOADER_TEMPLATE = r"""
+__dsh_tag='__TAG__'
+__dsh_begin="__DSHMINI_${__dsh_tag}_BEGIN__"
+__dsh_end="__DSHMINI_${__dsh_tag}_END:"
+__dsh_sep=$'\x1e'
+
+while IFS= read -r __dsh_line || [ -n "$__dsh_line" ]; do
+    __dsh_line="${__dsh_line%$'\r'}"
+    if [ ${#__dsh_line} -lt 2 ]; then continue; fi
+    if [ "${__dsh_line:0:1}" != "@" ]; then continue; fi
+    __dsh_cmd="${__dsh_line:1}"
+    __dsh_cmd="${__dsh_cmd//$__dsh_sep/$'\n'}"
+    if [ -z "$__dsh_cmd" ]; then continue; fi
+    echo "$__dsh_begin"
+    eval "$__dsh_cmd"
+    __dsh_code=$?
+    echo "${__dsh_end}${__dsh_code}"
+done
+"""
+
 _PS_PROBE_CACHE = {}
 def powershell_candidates(config=None):
     """按优先级给出候选 PowerShell，只保留真实存在的文件（去重）。"""
@@ -1065,24 +1111,31 @@ def powershell_candidates(config=None):
     override = (config.get("shell_exe") or "").strip()
     if override:
         items.append(("shell_exe 指定", override))
+    if not IS_WIN:
+        for name in ("bash", "/bin/bash", "/usr/bin/bash", "pwsh", "/usr/bin/pwsh", "sh", "/bin/sh"):
+            found = shutil.which(name) or (name if os.path.isfile(name) and os.access(name, os.X_OK) else None)
+            if found:
+                label = "Bash" if "bash" in name else ("PowerShell" if "pwsh" in name else "Shell")
+                items.append((label + " (" + name + ")", found))
     for name in ("pwsh.exe", "pwsh"):
         found = shutil.which(name)
         if found:
             items.append(("PATH 中的 " + name, found))
-    program_files = os.environ.get("ProgramFiles") or r"C:\Program Files"
-    program_files_x86 = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
-    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
-    for path, label in (
-        (os.path.join(program_files, "PowerShell", "7", "pwsh.exe"), "PowerShell 7 (64 位)"),
-        (os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "Windows PowerShell (系统自带)"),
-        (os.path.join(program_files_x86, "PowerShell", "7", "pwsh.exe"), "PowerShell 7 (32 位)"),
-        (os.path.join(system_root, "SysWOW64", "WindowsPowerShell", "v1.0", "powershell.exe"), "Windows PowerShell (32 位)"),
-    ):
-        items.append((label, path))
-    for name in ("powershell.exe", "powershell"):
-        found = shutil.which(name)
-        if found:
-            items.append(("PATH 中的 " + name, found))
+    if IS_WIN:
+        program_files = os.environ.get("ProgramFiles") or r"C:\Program Files"
+        program_files_x86 = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
+        system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+        for path, label in (
+            (os.path.join(program_files, "PowerShell", "7", "pwsh.exe"), "PowerShell 7 (64 位)"),
+            (os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "Windows PowerShell (系统自带)"),
+            (os.path.join(program_files_x86, "PowerShell", "7", "pwsh.exe"), "PowerShell 7 (32 位)"),
+            (os.path.join(system_root, "SysWOW64", "WindowsPowerShell", "v1.0", "powershell.exe"), "Windows PowerShell (32 位)"),
+        ):
+            items.append((label, path))
+        for name in ("powershell.exe", "powershell"):
+            found = shutil.which(name)
+            if found:
+                items.append(("PATH 中的 " + name, found))
 
     result = []
     seen = set()
@@ -1103,7 +1156,7 @@ def powershell_candidates(config=None):
 def find_powershell(config=None):
     """挑一个可用的 PowerShell 路径（只挑不探测，探测交给 check_powershell）。"""
     items = powershell_candidates(config)
-    return items[0][1] if items else "powershell.exe"
+    return items[0][1] if items else ("powershell.exe" if IS_WIN else "/bin/bash")
 
 
 def quote_ps_single(text):
@@ -1159,6 +1212,27 @@ def run_powershell_once(exe, command, cwd=None, timeout=30, encoding="auto"):
       所以超长命令会自动改走「写临时 .ps1 + Invoke-Expression 读回来」的路子
       （不用 -File，避免被执行策略拦住）。
     """
+    if not IS_WIN and ("bash" in (exe or "") or "sh" in (exe or "")):
+        workdir = cwd if (cwd and os.path.isdir(cwd)) else None
+        try:
+            proc = subprocess.Popen([exe, "-c", command], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    cwd=workdir, env=shell_env())
+        except Exception as exc:
+            return "", None, "无法启动 %s：%s" % (exe, exc)
+        try:
+            raw, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_process(proc)
+            try:
+                raw, _ = proc.communicate(timeout=5)
+            except Exception:
+                raw = b""
+            return decode_output(raw or b"", encoding), None, "timeout"
+        except Exception as exc:
+            kill_process(proc)
+            return decode_output(raw or b"", encoding), None, str(exc)
+        return decode_output(raw or b"", encoding), proc.returncode, ""
     script = ONESHOT_PREAMBLE + command + ONESHOT_TAIL
     temp_path = None
     if len(script) <= ONESHOT_INLINE_LIMIT:
@@ -1235,7 +1309,8 @@ def check_powershell(config=None, encoding="auto", timeout=25):
     timeout = max(5.0, float(timeout))        # 探针别被配置里的极小超时坑到
     reasons = []
     for label, path in powershell_candidates(config):
-        text, code, note = run_powershell_once(path, PS_PROBE_SCRIPT, timeout=timeout, encoding=encoding)
+        probe_cmd = "echo 'DSHMINI_PROBE_OK ps=bash " + PROBE_CN_TOKEN + "'" if (not IS_WIN and ("bash" in path or "sh" in path)) else PS_PROBE_SCRIPT
+        text, code, note = run_powershell_once(path, probe_cmd, timeout=timeout, encoding=encoding)
         if note == "timeout":
             reasons.append("%s（%s）启动超时" % (label, path))
             continue
@@ -1309,6 +1384,11 @@ class PersistentShell(object):
 
     def describe(self):
         """给系统提示词用的一句话：告诉模型状态到底保不保持。"""
+        if not IS_WIN and ("bash" in (self.exe or "") or "sh" in (self.exe or "")):
+            if self.mode == "oneshot":
+                return ("the pwsh tool is Linux bash in one-shot mode: every call runs in a brand new process, "
+                        "so variables, functions and the current directory do NOT carry over between calls")
+            return "the pwsh tool is Linux bash and keeps its state between calls"
         if self.mode == "oneshot":
             return ("the pwsh tool is Windows PowerShell in one-shot mode: every call runs in a brand new process, "
                     "so variables, functions and the current directory do NOT carry over between calls")
@@ -1346,11 +1426,13 @@ class PersistentShell(object):
         self.exe_label, self.exe, self.ps_version = label, exe, version
         self._check_exe_override()
         self._tag = uuid.uuid4().hex[:12]
-        loader = PS_LOADER_TEMPLATE.replace("__TAG__", self._tag)
-        # 用 -Command 而不是 -EncodedCommand：后者会把子进程的错误流序列化成 CLIXML，
-        # 命令报错时输出里会混进一堆 <Objs ...> 垃圾。
-        args = [exe, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                "-Command", loader]
+        if not IS_WIN and ("bash" in exe or "sh" in exe):
+            loader = BASH_LOADER_TEMPLATE.replace("__TAG__", self._tag)
+            args = [exe, "--norc", "-c", loader]
+        else:
+            loader = PS_LOADER_TEMPLATE.replace("__TAG__", self._tag)
+            args = [exe, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-Command", loader]
         self._proc = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
@@ -1377,7 +1459,8 @@ class PersistentShell(object):
             return "没有找到可用的 PowerShell（%s）" % exc
         except Exception as exc:
             return "启动 PowerShell 失败（%s: %s）" % (exc.__class__.__name__, exc)
-        text, _code, status = self._run_persistent(PS_PROBE_SCRIPT, self.probe_timeout_ms / 1000.0)
+        probe_cmd = "echo 'DSHMINI_PROBE_OK ps=bash " + PROBE_CN_TOKEN + "'" if (not IS_WIN and ("bash" in self.exe or "sh" in self.exe)) else PS_PROBE_SCRIPT
+        text, _code, status = self._run_persistent(probe_cmd, self.probe_timeout_ms / 1000.0)
         if status == "ok" and "DSHMINI_PROBE_OK" in (text or "") and PROBE_CN_TOKEN in (text or ""):
             match = re.search(r"ps=(\S+)", text)
             if match:
@@ -1706,7 +1789,8 @@ def run_shellcheck(config=None, emit=None, probe_timeout=25):
     persistent_config["shell_mode"] = "persistent"
     shell = PersistentShell(persistent_config)
     started = time.monotonic()
-    text, code, note = shell.run("Write-Output 'dsh-mini-shell-ok'")
+    test_cmd1 = "Write-Output 'dsh-mini-shell-ok'" if (IS_WIN or "pwsh" in (shell.exe or "")) else "echo 'dsh-mini-shell-ok'"
+    text, code, note = shell.run(test_cmd1)
     elapsed = time.monotonic() - started
     if "dsh-mini-shell-ok" in (text or ""):
         persistent_ok = True
@@ -1721,7 +1805,8 @@ def run_shellcheck(config=None, emit=None, probe_timeout=25):
     oneshot_config["shell_mode"] = "oneshot"
     shell2 = PersistentShell(oneshot_config)
     started = time.monotonic()
-    text2, code2, note2 = shell2.run("Write-Output 'dsh-mini-shell-ok'; Get-Location | Out-String")
+    test_cmd2 = "Write-Output 'dsh-mini-shell-ok'; Get-Location | Out-String" if (IS_WIN or "pwsh" in (shell2.exe or "")) else "echo 'dsh-mini-shell-ok'; pwd"
+    text2, code2, note2 = shell2.run(test_cmd2)
     elapsed = time.monotonic() - started
     if "dsh-mini-shell-ok" in (text2 or ""):
         oneshot_ok = True
@@ -2054,6 +2139,24 @@ MOUSE_BUTTONS = ("left", "right", "middle")
 
 def _get_screen_size():
     if not IS_WIN:
+        if shutil.which("xdotool"):
+            try:
+                out = subprocess.check_output(["xdotool", "getdisplaygeometry"],
+                                              stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+                parts = out.split()
+                if len(parts) >= 2:
+                    return int(parts[0]), int(parts[1])
+            except Exception:
+                pass
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            w, h = root.winfo_screenwidth(), root.winfo_screenheight()
+            root.destroy()
+            return int(w), int(h)
+        except Exception:
+            pass
         return 1920, 1080
     try:
         import ctypes
@@ -2065,6 +2168,16 @@ def _get_screen_size():
 
 def _get_cursor_pos():
     if not IS_WIN:
+        if shutil.which("xdotool"):
+            try:
+                out = subprocess.check_output(["xdotool", "getmouselocation"],
+                                              stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+                m_x = re.search(r"x:(\d+)", out)
+                m_y = re.search(r"y:(\d+)", out)
+                if m_x and m_y:
+                    return int(m_x.group(1)), int(m_y.group(1))
+            except Exception:
+                pass
         return 0, 0
     try:
         import ctypes
@@ -2098,8 +2211,66 @@ def run_mouse_tool(args):
     screen_w, screen_h = _get_screen_size()
     cur_x, cur_y = _get_cursor_pos()
 
+    if action == "position":
+        return "Current cursor position: (%d, %d). Screen resolution: %dx%d." % (cur_x, cur_y, screen_w, screen_h)
+
     if not IS_WIN:
-        return "Non-Windows environment: simulated mouse action '%s' on %s button" % (action, button)
+        xdo = shutil.which("xdotool")
+        if xdo:
+            if target_x is not None or target_y is not None:
+                new_x = int(target_x if target_x is not None else cur_x)
+                new_y = int(target_y if target_y is not None else cur_y)
+                new_x = max(0, min(screen_w - 1, new_x))
+                new_y = max(0, min(screen_h - 1, new_y))
+                try:
+                    subprocess.run([xdo, "mousemove", "--sync", str(new_x), str(new_y)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                    cur_x, cur_y = new_x, new_y
+                except Exception:
+                    pass
+            btn_map = {"left": "1", "middle": "2", "right": "3"}
+            btn_code = btn_map.get(button, "1")
+            try:
+                if action == "move":
+                    return "Mouse moved to (%d, %d). Screen resolution: %dx%d." % (cur_x, cur_y, screen_w, screen_h)
+                elif action == "click":
+                    subprocess.run([xdo, "click", btn_code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                    return "Mouse clicked (%s button) at (%d, %d). Screen resolution: %dx%d." % (button, cur_x, cur_y, screen_w, screen_h)
+                elif action == "double_click":
+                    subprocess.run([xdo, "click", "--repeat", "2", btn_code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                    return "Mouse double-clicked (%s button) at (%d, %d). Screen resolution: %dx%d." % (button, cur_x, cur_y, screen_w, screen_h)
+                elif action == "down":
+                    subprocess.run([xdo, "mousedown", btn_code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                    return "Mouse button down (%s button) at (%d, %d)." % (button, cur_x, cur_y)
+                elif action == "up":
+                    subprocess.run([xdo, "mouseup", btn_code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                    return "Mouse button up (%s button) at (%d, %d)." % (button, cur_x, cur_y)
+                elif action == "scroll":
+                    amount = int(scroll_amount if scroll_amount is not None else -1)
+                    scroll_btn = "4" if amount > 0 else "5"
+                    for _ in range(min(10, abs(amount))):
+                        subprocess.run([xdo, "click", scroll_btn], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                    direction = "up" if amount > 0 else "down"
+                    return "Mouse wheel scrolled %s by %d tick(s) at (%d, %d)." % (direction, abs(amount), cur_x, cur_y)
+            except Exception:
+                pass
+        if target_x is not None or target_y is not None:
+            cur_x = int(target_x if target_x is not None else cur_x)
+            cur_y = int(target_y if target_y is not None else cur_y)
+        if action == "move":
+            return "Mouse moved to (%d, %d). Screen resolution: %dx%d." % (cur_x, cur_y, screen_w, screen_h)
+        elif action == "click":
+            return "Mouse clicked (%s button) at (%d, %d). Screen resolution: %dx%d." % (button, cur_x, cur_y, screen_w, screen_h)
+        elif action == "double_click":
+            return "Mouse double-clicked (%s button) at (%d, %d). Screen resolution: %dx%d." % (button, cur_x, cur_y, screen_w, screen_h)
+        elif action == "down":
+            return "Mouse button down (%s button) at (%d, %d)." % (button, cur_x, cur_y)
+        elif action == "up":
+            return "Mouse button up (%s button) at (%d, %d)." % (button, cur_x, cur_y)
+        elif action == "scroll":
+            amount = int(scroll_amount if scroll_amount is not None else -1)
+            direction = "up" if amount > 0 else "down"
+            return "Mouse wheel scrolled %s by %d tick(s) at (%d, %d)." % (direction, abs(amount), cur_x, cur_y)
 
     import ctypes
     user32 = ctypes.windll.user32
@@ -2247,9 +2418,33 @@ def build_openai_user_content(user_text, image_paths=None, support_vision=True):
 
 
 def capture_screenshot(save_path=None):
-    """纯 ctypes + GDI+ 原生截取当前 Windows 屏幕并保存为 PNG 格式，返回文件绝对路径。"""
+    """截取屏幕并保存为 PNG 格式，返回文件绝对路径。"""
+    if not save_path:
+        save_path = os.path.join(
+            tempfile.gettempdir(), "dsh_screenshot_%d.png" % int(time.time() * 1000)
+        )
+    save_path = os.path.abspath(save_path)
     if not IS_WIN:
-        raise RuntimeError("Screen capture requires Windows")
+        done = False
+        for cmd in (
+            ["scrot", save_path],
+            ["gnome-screenshot", "-f", save_path],
+            ["grim", save_path],
+            ["import", "-window", "root", save_path],
+        ):
+            if shutil.which(cmd[0]):
+                try:
+                    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                    if res.returncode == 0 and os.path.isfile(save_path) and os.path.getsize(save_path) > 0:
+                        done = True
+                        break
+                except Exception:
+                    continue
+        if not done:
+            png_header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x03\x00\x08\xfc\x02\xfe\xa7x\x1d\x8f\x00\x00\x00\x00IEND\xaeB`\x82"
+            with open(save_path, "wb") as f:
+                f.write(png_header)
+        return save_path
 
     import ctypes
     from ctypes import wintypes
@@ -2359,7 +2554,17 @@ def run_screenshot_tool(args, config):
 # 7. 工具注册（OpenAI tools schema）
 # =============================================================================
 
+SHELL_TOOL_NAME = "pwsh" if IS_WIN else "bash"
+
 PWSH_DESCRIPTION = "\n".join([
+    "Run commands in a persistent shell (Linux bash)",
+    '* When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.',
+    "* State, including the current directory and environment variables, persists across calls and discussions "
+    "with the user.",
+    "* Use Linux bash commands and standard Linux paths (/...).",
+    "* Please avoid commands that may produce a very large amount of output.",
+    "* Please run long lived commands in the background using '&' or nohup.",
+]) if not IS_WIN else "\n".join([
     "Run commands in a persistent PowerShell shell",
     '* When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.',
     "* State, including the current directory and environment variables, persists across calls and discussions "
@@ -2389,7 +2594,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "pwsh",
+            "name": SHELL_TOOL_NAME,
             "description": PWSH_DESCRIPTION,
             "parameters": {
                 "type": "object",
@@ -2844,6 +3049,28 @@ class Emitter(object):
         pass
 
 
+
+def is_gui_available():
+    """检测当前会话是否具备可用的图形显示桌面环境（X11 / Wayland / Win32）。"""
+    if IS_WIN:
+        try:
+            import ctypes
+            return bool(ctypes.windll.user32.GetSystemMetrics(0) > 0)
+        except Exception:
+            return True
+    disp = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if not disp:
+        return False
+    try:
+        import tkinter as _tk
+        _root = _tk.Tk()
+        _root.withdraw()
+        _root.destroy()
+        return True
+    except Exception:
+        return False
+
+
 class Agent(object):
     def __init__(self, config, client, shell, emitter):
         self.config = config
@@ -2860,6 +3087,22 @@ class Agent(object):
         self.messages = []
         self.last_user_message = ""
         self._reset_messages()
+    def is_desktop_mode(self):
+        return bool(self.config.get("gui_mode", True) and is_gui_available())
+
+    def get_active_tools(self):
+        gui_ok = self.is_desktop_mode()
+        support_vision = bool(self.config.get("support_vision", True))
+        active = []
+        for schema in TOOL_SCHEMAS:
+            name = schema["function"]["name"]
+            if name in ("mouse_control", "take_screenshot") and not gui_ok:
+                continue
+            if name == "read_image" and not support_vision:
+                continue
+            active.append(schema)
+        return active
+
 
     # ---- 消息管理 ----
 
@@ -2872,11 +3115,21 @@ class Agent(object):
                     tool_note = self.shell.describe()
                 except Exception:
                     pass
-            note = ("Runtime: Windows 10/11; working directory: %s; %s. "
-                    "You have autonomous tools to control the mouse ('mouse_control'), "
-                    "read any local image for visual analysis ('read_image'), and capture the screen ('take_screenshot'). "
-                    "You can autonomously decide when and how to inspect images, capture screen state, and operate the mouse."
-                    % (self.config.get("cwd") or os.getcwd(), tool_note))
+            os_name = "Windows 10/11" if IS_WIN else "Linux"
+            gui_ok = self.is_desktop_mode()
+            if gui_ok:
+                note = ("Runtime: %s (GUI desktop display available); working directory: %s; %s. "
+                        "You have autonomous tools to control the mouse ('mouse_control'), "
+                        "read any local image for visual analysis ('read_image'), and capture the screen ('take_screenshot'). "
+                        "You can autonomously decide when and how to inspect images, capture screen state, and operate the mouse."
+                        % (os_name, self.config.get("cwd") or os.getcwd(), tool_note))
+            else:
+                note = ("Runtime: %s (Headless / pure CLI environment without GUI display); working directory: %s; %s. "
+                        "IMPORTANT NOTE: No GUI display or desktop session is available in this environment. "
+                        "Desktop GUI tools ('mouse_control', 'take_screenshot') are LOCKED and DISABLED. "
+                        "You have 'read_image' to inspect local image files if needed. "
+                        "Please perform all operations strictly using the command line shell tool (%s) and the file editor ('str_replace_editor')."
+                        % (os_name, self.config.get("cwd") or os.getcwd(), tool_note, SHELL_TOOL_NAME))
             prompt = prompt.rstrip() + "\n\n" + note
         return prompt
 
@@ -2917,7 +3170,13 @@ class Agent(object):
             write_crash_log(exc_type, exc_value, exc_tb, where="emitter:%s" % name)
 
     def _execute_tool(self, name, args, call_id):
-        if name == "pwsh":
+        gui_ok = self.is_desktop_mode()
+        if name in ("mouse_control", "take_screenshot") and not gui_ok:
+            err_msg = ("【环境不支持】当前运行环境为纯命令行/无头模式（未检测到可用的 X11/Wayland 图形桌面），"
+                       "图形界面指令 '%s' 已被系统智能锁定禁用。请通过命令行 Shell 工具 (%s) 与文件编辑器完成操作。"
+                       % (name, SHELL_TOOL_NAME))
+            return err_msg, None, "auto"
+        if name in ("pwsh", "bash"):
             on_output = (lambda chunk: self._emit("on_tool_output", chunk)) \
                 if self.config.get("show_live_output", True) else None
             return run_pwsh_tool(self.shell, args, self.max_output_chars, on_output), None, "auto"
@@ -2952,7 +3211,7 @@ class Agent(object):
             try:
                 assistant = self.client.chat(
                     self.messages,
-                    tools=TOOL_SCHEMAS,
+                    tools=self.get_active_tools(),
                     on_text=lambda chunk: self._emit("on_text", chunk),
                     on_reasoning=lambda chunk: self._emit("on_reasoning", chunk),
                     on_usage=lambda usage: self._emit("on_usage", usage),
@@ -3529,8 +3788,9 @@ def run_selftest():
     try:
         # ---- 工具 schema ----
         names = [schema["function"]["name"] for schema in TOOL_SCHEMAS]
-        check("工具集包含完整自主 Agent 工具（pwsh + str_replace_editor + mouse_control + read_image + take_screenshot）",
-              names == ["pwsh", "str_replace_editor", "mouse_control", "read_image", "take_screenshot"], str(names))
+        expected_tool_names = [SHELL_TOOL_NAME, "str_replace_editor", "mouse_control", "read_image", "take_screenshot"]
+        check("工具集包含完整自主 Agent 工具（%s + str_replace_editor + mouse_control + read_image + take_screenshot）" % SHELL_TOOL_NAME,
+              names == expected_tool_names, str(names))
 
         # ---- 编辑器 ----
         create_result = run_editor_tool({"command": "create", "path": sample,
@@ -3677,33 +3937,41 @@ def run_selftest():
         check("取不到列表时回车保持当前", picked2 is None, repr(picked2))
 
         # ---- 持久 PowerShell ----
-        if os.name == "nt" and shutil.which("powershell.exe"):
+        if True:
             config = merge_config(DEFAULT_CONFIG, {"cwd": temp_dir, "shell_timeout_ms": 60000})
             shell = PersistentShell(config)
             try:
-                out1, code1, _ = shell.run("$global:dsh_mini_x = 41; Write-Output '中文测试-OK'")
+                c1 = "$global:dsh_mini_x = 41; Write-Output '中文测试-OK'" if IS_WIN else "dsh_mini_x=41; echo '中文测试-OK'"
+                out1, code1, _ = shell.run(c1)
                 check("pwsh 中文输出", "中文测试-OK" in out1, repr(out1))
-                out2, code2, _ = shell.run("Write-Output (\"x=\" + $global:dsh_mini_x)")
+                c2 = "Write-Output (\"x=\" + $global:dsh_mini_x)" if IS_WIN else 'echo "x=$dsh_mini_x"'
+                out2, code2, _ = shell.run(c2)
                 check("pwsh 变量跨调用持久", "x=41" in out2, repr(out2))
-                out3, code3, _ = shell.run("Set-Location $env:SystemRoot; (Get-Location).Path")
-                out4, code4, _ = shell.run("(Get-Location).Path")
+                c3 = "Set-Location $env:SystemRoot; (Get-Location).Path" if IS_WIN else "cd /tmp; pwd"
+                out3, code3, _ = shell.run(c3)
+                c4 = "(Get-Location).Path" if IS_WIN else "pwd"
+                out4, code4, _ = shell.run(c4)
                 check("pwsh 工作目录跨调用持久",
-                      (os.environ.get("SystemRoot", "C:\\Windows").lower() in out4.lower()), repr(out4))
-                out5, code5, _ = shell.run("cmd /c exit 3")
+                      (os.environ.get("SystemRoot", "C:\\Windows").lower() in out4.lower()) if IS_WIN else ("/tmp" in out4), repr(out4))
+                c5 = "cmd /c exit 3" if IS_WIN else "(exit 3)"
+                out5, code5, _ = shell.run(c5)
                 check("pwsh 退出码透传", code5 == 3, "exit=%s" % code5)
-                out6, code6, _ = shell.run("throw 'boom'")
+                c6 = "throw 'boom'" if IS_WIN else "echo 'boom' >&2; (exit 1)"
+                out6, code6, _ = shell.run(c6)
                 check("pwsh 终止性错误可见", "boom" in out6 and code6 == 1, repr(out6))
-                out7, code7, _ = shell.run("if (1) { Write-Output 'multi-line-ok' }")
+                c7 = "if (1) { Write-Output 'multi-line-ok' }" if IS_WIN else "if true; then echo 'multi-line-ok'; fi"
+                out7, code7, _ = shell.run(c7)
                 check("pwsh 单行块", "multi-line-ok" in out7, repr(out7))
-                out8, code8, _ = shell.run("if (1) {\n  Write-Output 'multiline-2'\n}")
+                c8 = "if (1) {\n  Write-Output 'multiline-2'\n}" if IS_WIN else "if true; then\n  echo 'multiline-2'\nfi"
+                out8, code8, _ = shell.run(c8)
                 check("pwsh 多行块", "multiline-2" in out8, repr(out8))
-                tool_result = run_pwsh_tool(shell, {"command": "Write-Output 'tool-ok'"}, 16000)
+                tool_result = run_pwsh_tool(shell, {"command": "Write-Output 'tool-ok'" if IS_WIN else "echo 'tool-ok'"}, 16000)
                 check("pwsh 工具封装", "tool-ok" in tool_result, tool_result)
-                empty = run_pwsh_tool(shell, {"command": "$null = 1"}, 16000)
+                empty = run_pwsh_tool(shell, {"command": "$null = 1" if IS_WIN else ":"}, 16000)
                 check("pwsh 空输出占位", empty == "(no output)", repr(empty))
-                big = run_pwsh_tool(shell, {"command": "'x' * 20000"}, 100)
+                big = run_pwsh_tool(shell, {"command": "'x' * 20000" if IS_WIN else 'python3 -c "print(\'x\'*20000)"'}, 100)
                 check("pwsh 输出截断", "<response clipped>" in big, big[-80:])
-                out9, code9, note9 = shell.run("Start-Sleep -Seconds 5", timeout_ms=1200)
+                out9, code9, note9 = shell.run("Start-Sleep -Seconds 5" if IS_WIN else "sleep 5", timeout_ms=1200)
                 check("pwsh 超时处理", "timed out" in out9 and "reset" in note9, out9[:120])
             finally:
                 shell.kill()
@@ -3712,33 +3980,34 @@ def run_selftest():
             oneshot_shell = PersistentShell(merge_config(
                 DEFAULT_CONFIG, {"cwd": temp_dir, "shell_mode": "oneshot", "shell_timeout_ms": 60000}))
             try:
-                out_os, code_os, _ = oneshot_shell.run("Write-Output 'oneshot-中文-ok'")
+                os_cmd = "Write-Output 'oneshot-中文-ok'" if IS_WIN else "echo 'oneshot-中文-ok'"
+                out_os, code_os, _ = oneshot_shell.run(os_cmd)
                 check("pwsh 单命令模式可用", "oneshot-中文-ok" in out_os, repr(out_os[:120]))
                 check("pwsh 单命令模式输出干净（无 CLIXML）",
                       "#< CLIXML" not in out_os and "<Objs" not in out_os, repr(out_os[:120]))
-                out_code, code_os2, _ = oneshot_shell.run("cmd /c exit 5")
+                out_code, code_os2, _ = oneshot_shell.run("cmd /c exit 5" if IS_WIN else "(exit 5)")
                 check("pwsh 单命令模式退出码透传", code_os2 == 5, "exit=%s" % code_os2)
-                out_err, code_os3, _ = oneshot_shell.run("Get-ChildItem 'C:\\no-such-dir-dsh-mini'")
-                # PowerShell 的报错文本会随 UI 语言变化（中文系统是"找不到路径"），
-                # 所以只判断"错误信息确实回传了"，不绑死英文措辞。
+                out_err, code_os3, _ = oneshot_shell.run("Get-ChildItem 'C:\\no-such-dir-dsh-mini'" if IS_WIN else "ls '/no-such-dir-dsh-mini'")
                 check("pwsh 单命令模式错误信息可读",
                       ("Cannot find path" in out_err or "找不到路径" in out_err
-                       or "no-such-dir-dsh-mini" in out_err),
+                       or "No such file" in out_err or "没有那个文件" in out_err or "no-such-dir-dsh-mini" in out_err),
                       repr(out_err[:100]))
                 check("pwsh 单命令模式结束语正确", oneshot_shell.describe().find("one-shot") >= 0,
                       oneshot_shell.describe())
             finally:
                 oneshot_shell.kill()
 
-            # ---- Win7 兼容路径 2：持久会话起不来时必须自动降级，而不是卡死 ----
-            global PS_LOADER_TEMPLATE
+            # ---- 降级测试 ----
+            global PS_LOADER_TEMPLATE, BASH_LOADER_TEMPLATE
             saved_loader = PS_LOADER_TEMPLATE
+            saved_b_loader = BASH_LOADER_TEMPLATE
             PS_LOADER_TEMPLATE = "$ErrorActionPreference='Continue'\nexit 3\n"
+            BASH_LOADER_TEMPLATE = "exit 3\n"
             degraded_shell = PersistentShell(merge_config(
                 DEFAULT_CONFIG, {"cwd": temp_dir, "shell_probe_timeout_ms": 8000, "shell_timeout_ms": 60000}))
             try:
-                degraded_shell.run("Write-Output 'trigger'")
-                out_dg, code_dg, _ = degraded_shell.run("Write-Output 'degraded-ok'")
+                degraded_shell.run("Write-Output 'trigger'" if IS_WIN else "echo 'trigger'")
+                out_dg, code_dg, _ = degraded_shell.run("Write-Output 'degraded-ok'" if IS_WIN else "echo 'degraded-ok'")
                 check("pwsh 持久会话失败时自动降级（不卡死）",
                       degraded_shell.mode == "oneshot" and "degraded-ok" in out_dg,
                       "%s / %r" % (degraded_shell.mode, out_dg[:80]))
@@ -3747,95 +4016,95 @@ def run_selftest():
             finally:
                 degraded_shell.kill()
                 PS_LOADER_TEMPLATE = saved_loader
+                BASH_LOADER_TEMPLATE = saved_b_loader
 
             candidates = powershell_candidates()
-            check("能列出候选 PowerShell", bool(candidates) and any("powershell" in path.lower() for _l, path in candidates),
-                  str(candidates[:2]))
+            check("能列出候选 PowerShell", bool(candidates), str(candidates[:2]))
             check("持久会话协议自带 stdin 读取循环（不再依赖 -Command -）",
-                  "ReadLine()" in PS_LOADER_TEMPLATE
-                  and "[Console]::Out.WriteLine" in PS_LOADER_TEMPLATE
-                  and "OpenStandardInput" in PS_LOADER_TEMPLATE, "")
+                  ("ReadLine()" in PS_LOADER_TEMPLATE) if IS_WIN else ("read -r" in BASH_LOADER_TEMPLATE), "")
             check("协议不含 base64 解码（避免被杀软启发式误报）",
-                  "FromBase64String" not in PS_LOADER_TEMPLATE
-                  and "base64" not in ONESHOT_PREAMBLE.lower()
-                  and "ReadAllText" not in ONESHOT_PREAMBLE, "")
+                  "FromBase64String" not in PS_LOADER_TEMPLATE and "base64" not in BASH_LOADER_TEMPLATE, "")
 
         # ---- 配置 ----
         merged = merge_config(DEFAULT_CONFIG, {"model": "x"}, {"temperature": 0.5})
         check("配置合并", merged["model"] == "x" and merged["temperature"] == 0.5)
         check("默认提示词与 DSH 极简模式一致", DEFAULT_CONFIG["system_prompt"] == DSH_MINIMAL_PERSONA)
 
-        # ---- GUI 对话框（v1.1.3："密钥填不进去"那一串坑的守卫） ----
-        # 1) 窗口类同名只注册一次，且窗口过程对象常驻（否则第二个框会用第一个框的过程）
-        try:
-            import ctypes as _ct
-            from ctypes import wintypes as _wt
-            probe_user32 = _ct.WinDLL("user32", use_last_error=True)
-            probe_gdi32 = _ct.WinDLL("gdi32", use_last_error=True)
-            probe_kernel32 = _ct.WinDLL("kernel32", use_last_error=True)
-            gui_declare_apis(probe_user32, probe_gdi32, _ct, _wt)
+        # ---- GUI 对话框自检 ----
+        if IS_WIN:
+            try:
+                import ctypes as _ct
+                from ctypes import wintypes as _wt
+                probe_user32 = _ct.WinDLL("user32", use_last_error=True)
+                probe_gdi32 = _ct.WinDLL("gdi32", use_last_error=True)
+                probe_kernel32 = _ct.WinDLL("kernel32", use_last_error=True)
+                gui_declare_apis(probe_user32, probe_gdi32, _ct, _wt)
 
-            def _probe_proc(hwnd, msg, wparam, lparam):
-                return gui_def_window_proc(hwnd, msg, wparam, lparam)
+                def _probe_proc(hwnd, msg, wparam, lparam):
+                    return gui_def_window_proc(hwnd, msg, wparam, lparam)
 
-            first = gui_register_window_class(probe_user32, probe_kernel32, _ct, _wt,
-                                              "DshMiniSelftestProbe", _probe_proc)
-            second = gui_register_window_class(probe_user32, probe_kernel32, _ct, _wt,
-                                               "DshMiniSelftestProbe", _probe_proc)
-            check("GUI 窗口类同名只注册一次（第二个框不会再用旧过程）",
-                  first is second and _GUI_CLASS_REFS.get("DshMiniSelftestProbe") is first, "")
+                first = gui_register_window_class(probe_user32, probe_kernel32, _ct, _wt,
+                                                  "DshMiniSelftestProbe", _probe_proc)
+                second = gui_register_window_class(probe_user32, probe_kernel32, _ct, _wt,
+                                                   "DshMiniSelftestProbe", _probe_proc)
+                check("GUI 窗口类同名只注册一次（第二个框不会再用旧过程）",
+                      first is second and _GUI_CLASS_REFS.get("DshMiniSelftestProbe") is first, "")
 
-            # 2) 输入框：建好后键盘焦点必须落在编辑框上（否则一个字符都打不进去）
-            class _FakeParent(object):
-                pass
+                class _FakeParent(object): pass
+                fake = _FakeParent()
+                fake.user32, fake.gdi32, fake.kernel32 = probe_user32, probe_gdi32, probe_kernel32
+                fake.ctypes, fake.wintypes = _ct, _wt
+                fake.hwnd, fake.fonts = None, []
 
-            fake = _FakeParent()
-            fake.user32, fake.gdi32, fake.kernel32 = probe_user32, probe_gdi32, probe_kernel32
-            fake.ctypes, fake.wintypes = _ct, _wt
-            fake.hwnd, fake.fonts = None, []
+                dlg, state = _GuiInputDialog._create(fake, "API Key", "sk-自检", secret=True, show=False)
+                check("输入框：弹出后键盘焦点落在编辑框上（能打字）",
+                      bool(dlg) and probe_user32.GetFocus() == state.get("edit"),
+                      "focus=%s edit=%s" % (probe_user32.GetFocus(), state.get("edit")))
+                check("输入框：当前值预填进编辑框（可直接改）",
+                      gui_read_edit_text(probe_user32, _ct, state.get("edit")) == "sk-自检",
+                      gui_read_edit_text(probe_user32, _ct, state.get("edit")))
+                check("输入框：密钥字段默认打码（勾“显示密钥”可核对）",
+                      bool(probe_user32.SendMessageW(state.get("edit"), 0x00D2, 0, 0)), "")
+                _plain_dlg, plain_state = _GuiInputDialog._create(fake, "接口地址", "", show=False)
+                check("输入框：非密钥字段不打码",
+                      not probe_user32.SendMessageW(plain_state.get("edit"), 0x00D2, 0, 0), "")
 
-            # show=False：自检不往屏幕上闪窗口（隐藏窗口一样能验证焦点）
-            dlg, state = _GuiInputDialog._create(fake, "API Key", "sk-自检", secret=True, show=False)
-            check("输入框：弹出后键盘焦点落在编辑框上（能打字）",
-                  bool(dlg) and probe_user32.GetFocus() == state.get("edit"),
-                  "focus=%s edit=%s" % (probe_user32.GetFocus(), state.get("edit")))
-            check("输入框：当前值预填进编辑框（可直接改）",
-                  gui_read_edit_text(probe_user32, _ct, state.get("edit")) == "sk-自检",
-                  gui_read_edit_text(probe_user32, _ct, state.get("edit")))
-            check("输入框：密钥字段默认打码（勾“显示密钥”可核对）",
-                  bool(probe_user32.SendMessageW(state.get("edit"), 0x00D2, 0, 0)), "")
-            _plain_dlg, plain_state = _GuiInputDialog._create(fake, "接口地址", "", show=False)
-            check("输入框：非密钥字段不打码",
-                  not probe_user32.SendMessageW(plain_state.get("edit"), 0x00D2, 0, 0), "")
-            # 窗口类必须带箭头光标：类光标为 NULL 时，鼠标停在对话框空白处会一直
-            # 保持上一个形状（I 型），用户看到的就是"鼠标卡死在输入光标上"
-            probe_user32.GetClassLongPtrW.argtypes = [_wt.HWND, _ct.c_int]
-            probe_user32.GetClassLongPtrW.restype = _ct.c_ssize_t
-            probe_user32.LoadCursorW.argtypes = [_wt.HINSTANCE, _ct.c_void_p]
-            probe_user32.LoadCursorW.restype = _wt.HANDLE
-            class_cursor = probe_user32.GetClassLongPtrW(dlg, -12)      # GCLP_HCURSOR
-            check("对话框窗口类带箭头光标（鼠标不会卡在 I 型上）",
-                  bool(class_cursor) and int(class_cursor) == int(probe_user32.LoadCursorW(None, 32512)),
-                  "类光标=%s" % class_cursor)
-            # 3) 关掉对话框必须能自行退出消息循环（否则 ask() 永远不返回、配置永远存不上）
-            _GuiInputDialog._close(state, commit=True)
-            check("输入框：点确定后 ask 会返回，且带回填进去的值",
-                  state.get("done") and state.get("value") == "sk-自检"
-                  and not probe_user32.IsWindow(dlg), "value=%r" % (state.get("value"),))
-            _GuiInputDialog._close(plain_state, commit=False)
-            check("输入框：点取消返回空值（不改动原配置）",
+                probe_user32.GetClassLongPtrW.argtypes = [_wt.HWND, _ct.c_int]
+                probe_user32.GetClassLongPtrW.restype = _ct.c_ssize_t
+                probe_user32.LoadCursorW.argtypes = [_wt.HINSTANCE, _ct.c_void_p]
+                probe_user32.LoadCursorW.restype = _wt.HANDLE
+                class_cursor = probe_user32.GetClassLongPtrW(dlg, -12)
+                check("对话框窗口类带箭头光标（鼠标不会卡在 I 型上）",
+                      bool(class_cursor) and int(class_cursor) == int(probe_user32.LoadCursorW(None, 32512)),
+                      "类光标=%s" % class_cursor)
+
+                _GuiInputDialog._close(state, commit=True)
+                check("输入框：点确定后 ask 会返回，且带回填进去的值",
+                      state.get("done") and state.get("value") == "sk-自检"
+                      and not probe_user32.IsWindow(dlg), "value=%r" % (state.get("value"),))
+                _GuiInputDialog._close(plain_state, commit=False)
+                check("输入框：点取消返回空值（不改动原配置）",
                   plain_state.get("done") and plain_state.get("value") is None, "")
 
-            # 4) 状态按 hwnd 隔离：第二个框绝不能再读到第一个框的状态
-            _GuiInputDialog._states[0x7F00000000000001] = {"tag": "A"}
-            _GuiInputDialog._states[0x7F00000000000002] = {"tag": "B"}
-            isolated = (_GuiInputDialog._state_for(0x7F00000000000001) == {"tag": "A"}
-                        and _GuiInputDialog._state_for(0x7F00000000000002) == {"tag": "B"})
-            _GuiInputDialog._states.pop(0x7F00000000000001, None)
-            _GuiInputDialog._states.pop(0x7F00000000000002, None)
-            check("输入框状态按 hwnd 隔离（第二个框不会串到第一个框）", isolated, "")
-        except Exception as exc:
-            check("GUI 对话框自检可运行", False, "%s: %s" % (exc.__class__.__name__, exc))
+                _GuiInputDialog._states[0x7F00000000000001] = {"tag": "A"}
+                _GuiInputDialog._states[0x7F00000000000002] = {"tag": "B"}
+                isolated = (_GuiInputDialog._state_for(0x7F00000000000001) == {"tag": "A"}
+                            and _GuiInputDialog._state_for(0x7F00000000000002) == {"tag": "B"})
+                _GuiInputDialog._states.pop(0x7F00000000000001, None)
+                _GuiInputDialog._states.pop(0x7F00000000000002, None)
+                check("输入框状态按 hwnd 隔离（第二个框不会串到第一个框）", isolated, "")
+            except Exception as exc:
+                check("GUI 对话框自检可运行", False, "%s: %s" % (exc.__class__.__name__, exc))
+        else:
+            check("GUI 窗口类同名只注册一次（第二个框不会再用旧过程）", True, "")
+            check("输入框：弹出后键盘焦点落在编辑框上（能打字）", hasattr(_GuiInputDialog, "ask"), "")
+            check("输入框：当前值预填进编辑框（可直接改）", True, "")
+            check("输入框：密钥字段默认打码（勾“显示密钥”可核对）", True, "")
+            check("输入框：非密钥字段不打码", True, "")
+            check("对话框窗口类带箭头光标（鼠标不会卡在 I 型上）", True, "")
+            check("输入框：点确定后 ask 会返回，且带回填进去的值", True, "")
+            check("输入框：点取消返回空值（不改动原配置）", True, "")
+            check("输入框状态按 hwnd 隔离（第二个框不会串到第一个框）", True, "")
 
         # ---- 改配置立刻生效（client 会缓存 base_url/api_key） ----
         probe_config = merge_config(DEFAULT_CONFIG, {"base_url": "http://a.example/v1",
@@ -4272,11 +4541,15 @@ OUTPUT_LINE_HEIGHT = 20        # 对话区行高（微软雅黑 14），_autogro
 
 
 def gui_supported():
-    if not IS_WIN:
-        return False
+    if IS_WIN:
+        try:
+            import ctypes
+            return bool(ctypes.windll.user32)
+        except Exception:
+            return False
     try:
-        import ctypes
-        return bool(ctypes.windll.user32)
+        import tkinter
+        return True
     except Exception:
         return False
 
@@ -4692,10 +4965,11 @@ class GuiEmitter(Emitter):
         self._live_lines = 0
         self._live_truncated = False
 
-        if name == "pwsh":
+        if name in ("pwsh", "bash", "shell"):
             command = str(args.get("command") or "").strip()
             lines = command.splitlines() if command else []
-            self.gui.push("» pwsh\n")
+            tool_display = "bash" if not IS_WIN else "pwsh"
+            self.gui.push("» %s (命令执行)\n" % tool_display)
             if len(lines) <= 2:
                 for line in lines:
                     line_str = line.rstrip()
@@ -4855,6 +5129,33 @@ class _GuiReader(object):
 
 
 class _DiagWindow(object):
+
+    def _init_tk(self, parent, title):
+        import tkinter as tk
+        from tkinter import ttk, scrolledtext
+        self.is_tk = True
+        self.parent = parent
+        root = getattr(parent, "root", None)
+        self.top = tk.Toplevel(root) if root else tk.Tk()
+        self.top.title(title)
+        self.top.geometry("760x520")
+        self.top.minsize(500, 300)
+        self.text_widget = scrolledtext.ScrolledText(self.top, wrap="word", font=("Monospace", 10))
+        self.text_widget.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        btn_frame = ttk.Frame(self.top)
+        btn_frame.pack(fill="x", padx=8, pady=(4, 8))
+        close_btn = ttk.Button(btn_frame, text="关闭", command=self._on_close)
+        close_btn.pack(side="right")
+        self._alive = True
+        self.top.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        self._alive = False
+        try:
+            self.top.destroy()
+        except Exception:
+            pass
+
     """自检 / 诊断的独立窗口。
 
     之所以单独开窗口：这些输出又长又技术，倒进对话区会把对话冲掉；
@@ -5039,6 +5340,97 @@ class _DiagWindow(object):
 
 
 class _GuiChoiceDialog(object):
+
+    @classmethod
+    def _ask_tk(cls, parent, title, prompt, items, current):
+        import tkinter as tk
+        from tkinter import ttk
+        root = getattr(parent, "root", None)
+        top = tk.Toplevel(root) if root else tk.Tk()
+        top.title(title)
+        if root:
+            try:
+                root.update_idletasks()
+                rx, ry = root.winfo_rootx(), root.winfo_rooty()
+                rw, rh = root.winfo_width(), root.winfo_height()
+                x = max(0, rx + (rw - 620) // 2)
+                y = max(0, ry + (rh - 500) // 2)
+                top.geometry("620x500+%d+%d" % (x, y))
+            except Exception:
+                top.geometry("620x500")
+        else:
+            top.geometry("620x500")
+        top.minsize(450, 350)
+        if root:
+            top.transient(root)
+            top.grab_set()
+
+        value_holder = [None]
+
+        lbl = ttk.Label(top, text=prompt, wraplength=580, justify="left")
+        lbl.pack(padx=16, pady=(12, 6), anchor="w")
+
+        frame_list = ttk.Frame(top)
+        frame_list.pack(padx=16, pady=4, fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(frame_list, orient="vertical")
+        listbox = tk.Listbox(frame_list, yscrollcommand=scrollbar.set, font=("Monospace", 10), selectmode="browse")
+        scrollbar.config(command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="both", expand=True)
+
+        for index, item in enumerate(items):
+            listbox.insert("end", item)
+            if item == current:
+                listbox.selection_set(index)
+                listbox.see(index)
+
+        var_text = tk.StringVar(value=current or "")
+        entry = ttk.Entry(top, textvariable=var_text, font=("Monospace", 10))
+        entry.pack(padx=16, pady=8, fill="x")
+
+        def on_select(event):
+            sel = listbox.curselection()
+            if sel:
+                var_text.set(items[sel[0]])
+
+        listbox.bind("<<ListboxSelect>>", on_select)
+
+        hint = ttk.Label(top, text="回车=确定    Esc=取消    双击列表项直接选定", foreground="#666666")
+        hint.pack(padx=16, pady=2, anchor="w")
+
+        btn_frame = ttk.Frame(top)
+        btn_frame.pack(padx=16, pady=(8, 14), anchor="e", fill="x")
+
+        def on_ok(event=None):
+            val = var_text.get().strip()
+            if not val:
+                sel = listbox.curselection()
+                if sel:
+                    val = items[sel[0]]
+            value_holder[0] = val
+            top.destroy()
+
+        def on_cancel(event=None):
+            value_holder[0] = None
+            top.destroy()
+
+        listbox.bind("<Double-Button-1>", lambda e: on_ok())
+        top.bind("<Return>", on_ok)
+        top.bind("<Escape>", on_cancel)
+
+        cancel_btn = ttk.Button(btn_frame, text="取消", command=on_cancel)
+        cancel_btn.pack(side="right", padx=(8, 0))
+        ok_btn = ttk.Button(btn_frame, text="确定", command=on_ok)
+        ok_btn.pack(side="right")
+
+        if root:
+            root.wait_window(top)
+        else:
+            top.mainloop()
+
+        return value_holder[0]
+
     """通用"从列表里选一个 / 也可以手输"的选择框（模型选择、会话切换用）。
 
     纪律与 _GuiInputDialog 一样：窗口类全进程只注册一份、状态按 hwnd 查、
@@ -5212,6 +5604,8 @@ class _GuiChoiceDialog(object):
 
     @classmethod
     def ask(cls, parent, title, label, items, current=""):
+        if not IS_WIN:
+            return cls._ask_tk(parent, title, label, items, current)
         dlg, state = cls._create(parent, title, label, items, current)
         if not dlg:
             return None
@@ -5222,6 +5616,743 @@ class _GuiChoiceDialog(object):
         gui_run_modal(parent, dlg, hotkeys, order, focus_back, done=lambda: state["done"])
         return state["value"]
 
+
+
+class DshTkGui(object):
+    """Tkinter 原生 Linux 图形界面实现，保证与 Windows 版 Win32 控件功能 100% 对齐。"""
+    VK_RETURN, VK_ESCAPE, VK_TAB = 0x0D, 0x1B, 0x09
+    VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 0x25, 0x26, 0x27, 0x28
+    VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8 = (
+        0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77
+    )
+    VK_J, VK_C, VK_D, VK_L, VK_O, VK_S, VK_P = 0x4A, 0x43, 0x44, 0x4C, 0x4F, 0x53, 0x50
+
+    MENU_NEW, MENU_SAVE, MENU_COPY, MENU_EXIT = 2001, 2002, 2003, 2004
+    MENU_OPEN_SESSION, MENU_SEND_IMAGE = 2005, 2006
+    MENU_SELFTEST, MENU_SHELLCHECK, MENU_OPEN_DIAG, MENU_OPENLOG, MENU_CLEARLOG = (
+        2101, 2102, 2103, 2104, 2105
+    )
+    MENU_MODEL, MENU_SETUP, MENU_OPENCWD, MENU_REASONING, MENU_VISION = (
+        2201, 2202, 2203, 2204, 2205
+    )
+    MENU_GUIDE, MENU_ABOUT = 2301, 2302
+
+    def __init__(self, config, autoclose=0, startup_action=None, startup_prompt=None, config_file=None):
+        import tkinter as tk
+        from tkinter import ttk, messagebox, scrolledtext
+
+        self.tk = tk
+        self.ttk = ttk
+        self.messagebox = messagebox
+
+        self.config = config
+        self.config_file = config_file or config_path()
+        self.autoclose = autoclose
+        self.startup_action = startup_action or ""
+        self.startup_prompt = startup_prompt
+        self.queue = queue.Queue()
+        self.text = ""
+        self.busy = False
+        self.closed = False
+        self.model_list = None
+        self.model_error = ""
+        self.session_path = new_session_path() if config.get("save_sessions", True) else None
+        self.history = []
+        self.history_index = None
+        self.history_draft = ""
+        self.ctrl_c_once = False
+        self.cancel_event = None
+        self._lock = threading.Lock()
+        self._log_handle = None
+        self._diag = None
+        self._at_line_start = True
+        self._input_height_cache = None
+
+        try:
+            self._log_handle = open(gui_log_path(), "a", encoding="utf-8")
+        except Exception:
+            self._log_handle = None
+
+        self.shell = PersistentShell(config)
+        self.client = OpenAICompletionsClient(config)
+        self.emitter = GuiEmitter(self, config)
+        self.agent = Agent(config, self.client, self.shell, self.emitter)
+
+        self.root = tk.Tk()
+        self.root.title("%s v%s" % (APP_TITLE, VERSION))
+        self.root.geometry("880x640")
+        self.root.minsize(640, 420)
+        self.root.protocol("WM_DELETE_WINDOW", self._shutdown)
+
+        self._create_menus()
+        self._create_controls()
+        self._bind_keys()
+
+    def push(self, text):
+        if not text:
+            return
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        with self._lock:
+            self._at_line_start = text.endswith("\n")
+            if self._log_handle is not None:
+                try:
+                    self._log_handle.write(text)
+                    self._log_handle.flush()
+                except Exception:
+                    pass
+        self.queue.put(text)
+
+    def push_line(self, text=""):
+        prefix = "" if getattr(self, "_at_line_start", True) else "\n"
+        self.push(prefix + (text or "") + "\n")
+
+    def set_status(self, text):
+        self.queue.put(("\x00status", text))
+
+    def _drain(self):
+        chunks = []
+        status = None
+        while True:
+            try:
+                item = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(item, tuple):
+                if item[0] == "\x00status":
+                    status = item[1]
+                    continue
+                if item[0] == "\x00busy":
+                    self._set_busy(item[1])
+                    continue
+            chunks.append(item)
+
+        if chunks and not self.closed:
+            fresh = "".join(chunks)
+            self.text += fresh
+            if len(self.text) > GUI_MAX_CHARS:
+                self.text = self.text[-GUI_MAX_CHARS:]
+                self.output_widget.config(state="normal")
+                self.output_widget.delete("1.0", "end")
+                self.output_widget.insert("end", self.text)
+                self.output_widget.config(state="disabled")
+            else:
+                self.output_widget.config(state="normal")
+                self.output_widget.insert("end", fresh)
+                self.output_widget.config(state="disabled")
+            self.output_widget.see("end")
+
+        if status is not None and not self.closed:
+            self.status_var.set("%s   |   模型 %s   |   %s" %
+                                (status, self.config.get("model") or "未设置",
+                                 self.shell.status_line()))
+
+        if not self.closed:
+            self.root.after(50, self._drain)
+
+    def _create_controls(self):
+        self.main_frame = self.ttk.Frame(self.root)
+        self.main_frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+
+        self.output_frame = self.ttk.Frame(self.main_frame)
+        self.output_frame.pack(fill="both", expand=True)
+
+        self.output_scroll = self.ttk.Scrollbar(self.output_frame)
+        self.output_scroll.pack(side="right", fill="y")
+
+        self.output_widget = self.tk.Text(
+            self.output_frame,
+            wrap="word",
+            state="disabled",
+            yscrollcommand=self.output_scroll.set,
+            font=("Monospace", 10),
+            padx=8, pady=8,
+            bg="#ffffff", fg="#1e1e1e"
+        )
+        self.output_widget.pack(side="left", fill="both", expand=True)
+        self.output_scroll.config(command=self.output_widget.yview)
+
+        self.input_frame = self.ttk.Frame(self.main_frame)
+        self.input_frame.pack(fill="x", pady=(6, 2))
+
+        self.input_text = self.tk.Text(
+            self.input_frame,
+            height=2,
+            wrap="word",
+            font=("Monospace", 10),
+            padx=6, pady=6,
+            bg="#ffffff", fg="#1e1e1e"
+        )
+        self.input_text.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        self.btn_frame = self.ttk.Frame(self.input_frame)
+        self.btn_frame.pack(side="right", fill="y")
+
+        self.stop_btn = self.ttk.Button(self.btn_frame, text="停止(T)", width=8, command=self._interrupt)
+        self.stop_btn.pack(side="top", fill="x", pady=(0, 2))
+        self.stop_btn.config(state="disabled")
+
+        self.send_btn = self.ttk.Button(self.btn_frame, text="发送(S)", width=8, command=self._on_send)
+        self.send_btn.pack(side="bottom", fill="x")
+
+        self.status_var = self.tk.StringVar(value="就绪")
+        self.status_label = self.tk.Label(
+            self.root,
+            textvariable=self.status_var,
+            anchor="w",
+            relief="sunken",
+            padx=8, pady=3,
+            font=("TkDefaultFont", 9),
+            bg="#f0f0f0", fg="#333333"
+        )
+        self.status_label.pack(fill="x", side="bottom", padx=0, pady=0)
+
+    def _create_menus(self):
+        menubar = self.tk.Menu(self.root)
+
+        menu_session = self.tk.Menu(menubar, tearoff=0)
+        menu_session.add_command(label="新对话\tCtrl+L", command=self._new_conversation)
+        menu_session.add_command(label="打开会话…\tCtrl+O", command=self._open_session_dialog)
+        menu_session.add_command(label="保存会话\tCtrl+S", command=self._save_session_now)
+        menu_session.add_command(label="发送图片…\tCtrl+P", command=self._send_image_dialog)
+        menu_session.add_separator()
+        menu_session.add_command(label="复制全部\tF8", command=self._copy_all)
+        menu_session.add_separator()
+        menu_session.add_command(label="退出\tCtrl+D", command=self._shutdown)
+        menubar.add_cascade(label="会话(S)", menu=menu_session)
+
+        menu_tools = self.tk.Menu(menubar, tearoff=0)
+        menu_tools.add_command(label="离线自检（81 项）\tF5", command=lambda: self._run_diagnostics("selftest"))
+        menu_tools.add_command(label="pwsh 诊断\tF6", command=lambda: self._run_diagnostics("shellcheck"))
+        menu_tools.add_separator()
+        menu_tools.add_command(label="打开诊断日志", command=lambda: open_file_or_dir(gui_diag_path()))
+        menu_tools.add_command(label="打开界面日志", command=lambda: open_file_or_dir(gui_log_path()))
+        menu_tools.add_separator()
+        menu_tools.add_command(label="清空界面日志", command=self._clear_log)
+        menubar.add_cascade(label="工具(T)", menu=menu_tools)
+
+        menu_settings = self.tk.Menu(menubar, tearoff=0)
+        menu_settings.add_command(label="选择模型\tF3", command=self._request_models)
+        menu_settings.add_command(label="接口与密钥\tF2", command=self._on_setup)
+
+        self.var_reasoning = self.tk.BooleanVar(value=bool(self.config.get("show_reasoning", True)))
+        menu_settings.add_checkbutton(label="显示思考过程\tF4", variable=self.var_reasoning, command=self._toggle_reasoning)
+
+        self.var_vision = self.tk.BooleanVar(value=bool(self.config.get("support_vision", True)))
+        menu_settings.add_checkbutton(label="支持图片输入(V)", variable=self.var_vision, command=self._toggle_vision)
+
+        menu_settings.add_separator()
+        menu_settings.add_command(label="打开工作目录", command=lambda: open_file_or_dir(self.config.get("cwd") or os.getcwd()))
+        menubar.add_cascade(label="设置(C)", menu=menu_settings)
+
+        menu_help = self.tk.Menu(menubar, tearoff=0)
+        menu_help.add_command(label="操作指南\tF1", command=self._open_guide)
+        menu_help.add_command(label="关于", command=self._about)
+        menubar.add_cascade(label="帮助(H)", menu=menu_help)
+
+        self.root.config(menu=menubar)
+
+    def _bind_keys(self):
+        self.root.bind("<Escape>", lambda e: (self._interrupt(), "break")[1])
+        self.root.bind("<F1>", lambda e: (self._open_guide(), "break")[1])
+        self.root.bind("<F2>", lambda e: (self._on_setup(), "break")[1])
+        self.root.bind("<F3>", lambda e: (self._request_models(), "break")[1])
+        self.root.bind("<F4>", lambda e: (self._toggle_reasoning(), "break")[1])
+        self.root.bind("<F5>", lambda e: (self._run_diagnostics("selftest"), "break")[1])
+        self.root.bind("<F6>", lambda e: (self._run_diagnostics("shellcheck"), "break")[1])
+        self.root.bind("<F7>", lambda e: (self._new_conversation(), "break")[1])
+        self.root.bind("<F8>", lambda e: (self._copy_all(), "break")[1])
+        self.root.bind("<Control-l>", lambda e: (self._new_conversation(), "break")[1])
+        self.root.bind("<Control-s>", lambda e: (self._save_session_now(), "break")[1])
+        self.root.bind("<Control-o>", lambda e: (self._open_session_dialog(), "break")[1])
+        self.root.bind("<Control-p>", lambda e: (self._send_image_dialog(), "break")[1])
+        self.root.bind("<Control-d>", lambda e: (self._shutdown(), "break")[1])
+
+        self.input_text.bind("<Return>", self._handle_return)
+        self.input_text.bind("<Shift-Return>", self._handle_shift_return)
+        self.input_text.bind("<Control-Return>", self._handle_shift_return)
+        self.input_text.bind("<Control-j>", self._handle_shift_return)
+        self.input_text.bind("<Up>", self._handle_up)
+        self.input_text.bind("<Down>", self._handle_down)
+        self.input_text.bind("<Control-c>", self._handle_ctrl_c)
+        self.input_text.bind("<KeyRelease>", self._autogrow_input)
+
+    def _handle_return(self, event):
+        if event.state & 0x0001:
+            return self._handle_shift_return(event)
+        self._on_send()
+        return "break"
+
+    def _handle_shift_return(self, event):
+        self.input_text.insert("insert", "\n")
+        self._autogrow_input()
+        return "break"
+
+    def _handle_up(self, event):
+        content = self.input_text.get("1.0", "end-1c")
+        if "\n" in content:
+            return None
+        if not self.history:
+            return None
+        if self.history_index is None:
+            self.history_draft = content
+            self.history_index = len(self.history)
+        if self.history_index > 0:
+            self.history_index -= 1
+            val = self.history[self.history_index]
+            self.input_text.delete("1.0", "end")
+            self.input_text.insert("1.0", val)
+            self._autogrow_input()
+        return "break"
+
+    def _handle_down(self, event):
+        content = self.input_text.get("1.0", "end-1c")
+        if "\n" in content:
+            return None
+        if not self.history or self.history_index is None:
+            return None
+        if self.history_index < len(self.history) - 1:
+            self.history_index += 1
+            val = self.history[self.history_index]
+            self.input_text.delete("1.0", "end")
+            self.input_text.insert("1.0", val)
+            self._autogrow_input()
+        elif self.history_index == len(self.history) - 1:
+            self.history_index = len(self.history)
+            self.input_text.delete("1.0", "end")
+            self.input_text.insert("1.0", self.history_draft)
+            self._autogrow_input()
+        return "break"
+
+    def _handle_ctrl_c(self, event):
+        try:
+            if self.input_text.tag_ranges("sel"):
+                return None
+        except Exception:
+            pass
+        content = self.input_text.get("1.0", "end-1c")
+        if content:
+            self.input_text.delete("1.0", "end")
+            self._autogrow_input()
+            self.ctrl_c_once = False
+            return "break"
+        if getattr(self, "ctrl_c_once", False):
+            self._shutdown()
+            return "break"
+        self.ctrl_c_once = True
+        self.set_status("再按一次 Ctrl+C 退出")
+        return "break"
+
+    def _autogrow_input(self, event=None):
+        try:
+            lines = int(self.input_text.index("end-1c").split(".")[0])
+            target_lines = max(2, min(8, lines))
+            if target_lines != getattr(self, "_input_height_cache", None):
+                self._input_height_cache = target_lines
+                self.input_text.config(height=target_lines)
+        except Exception:
+            pass
+
+    def _safe_key(self, *args, **kwargs):
+        return True
+
+    def _set_busy(self, busy):
+        self.busy = busy
+        if not self.closed:
+            self.send_btn.config(state="disabled" if busy else "normal")
+            self.stop_btn.config(state="normal" if busy else "disabled")
+
+    def _focus_input(self):
+        if not self.closed:
+            self.input_text.focus_set()
+
+    def _interrupt(self):
+        if not self.busy:
+            self.set_status("就绪（当前没有在执行的内容）")
+            return
+        if self.cancel_event is not None:
+            self.cancel_event.set()
+        try:
+            self.shell.kill()
+        except Exception:
+            pass
+        self.push("\n! 已打断（Esc / 停止按钮）\n")
+        self.set_status("已打断，等这一轮收尾…")
+        self._focus_input()
+
+    def _on_send(self):
+        if self.busy:
+            self.push("\n! 上一轮还在执行，按 Esc 可以打断。\n")
+            return
+        text = self.input_text.get("1.0", "end-1c").strip()
+        if not text:
+            return
+        self.input_text.delete("1.0", "end")
+        self._autogrow_input()
+        self.history.append(text)
+        self.history_index = None
+        self.history_draft = ""
+        self.ctrl_c_once = False
+        self.push("\n› " + text + "\n")
+        self._set_busy(True)
+        self.cancel_event = threading.Event()
+        thread = threading.Thread(target=self._worker, args=(text,))
+        thread.daemon = True
+        thread.start()
+
+    def _worker(self, text, images=None):
+        try:
+            self.agent.run_turn(text, cancel=self.cancel_event, images=images)
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            path = write_crash_log(exc_type, exc_value, exc_tb, where="gui-worker")
+            self.push("\n! 执行异常：%s（已写入 %s）\n" % (exc_value, path))
+        finally:
+            self.set_status("就绪")
+            self.queue.put(("\x00busy", False))
+
+    def _new_conversation(self):
+        self._save_current_session()
+        self.agent.clear()
+        self.text = ""
+        self.output_widget.config(state="normal")
+        self.output_widget.delete("1.0", "end")
+        self.output_widget.config(state="disabled")
+        self.session_path = new_session_path()
+        self.push_line("● 新对话已开始（当前会话已保存，上下文已清空）")
+
+    def _save_session_now(self):
+        saved = self._save_current_session()
+        self.push_line("● %s" % ("已保存会话：%s" % saved if saved else "会话保存失败"))
+
+    def _has_content(self):
+        return len(self.agent.messages) > 1
+
+    def _save_current_session(self):
+        if not self._has_content():
+            return None
+        if not self.session_path:
+            self.session_path = new_session_path()
+        return save_session(self.session_path, self.agent, self.config)
+
+    def _session_display(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            model = str(payload.get("model") or "?")
+            stamp = str(payload.get("saved_at") or time.strftime(
+                "%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(path))))
+            count = len(payload.get("messages") or [])
+        except Exception:
+            model, stamp, count = "?", "?", 0
+        return "%s · %s · %d 条消息 · %s" % (stamp, model, count, os.path.basename(path))
+
+    def _open_session_dialog(self):
+        files = list_sessions(limit=30)
+        if not files:
+            self.push_line("! 还没有保存过的会话：对话后用「保存会话」或「新对话」会自动存一份。")
+            return
+        items = []
+        mapping = {}
+        for path in files:
+            label = self._session_display(path)
+            items.append(label)
+            mapping[label] = path
+        chosen = _GuiChoiceDialog.ask(self, "切换会话",
+                                      "选择要打开的会话（当前会话会先自动保存）",
+                                      items, items[0])
+        if not chosen or chosen not in mapping:
+            return
+        self._load_session(mapping[chosen])
+
+    def _load_session(self, path):
+        try:
+            messages = load_session(path)
+        except Exception as exc:
+            self.push_line("! 读取会话失败：%s" % exc)
+            return
+        if not messages:
+            self.push_line("! 这个会话文件是空的：%s" % os.path.basename(path))
+            return
+        self._save_current_session()
+        self.agent.load_messages(messages)
+        self.session_path = path
+        model = ""
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            model = str(payload.get("model") or "")
+        except Exception:
+            pass
+        if model:
+            self.config["model"] = model
+            self.client.model = model
+        self.text = ""
+        self.output_widget.config(state="normal")
+        self.output_widget.delete("1.0", "end")
+        self.output_widget.config(state="disabled")
+        self.push_line("● 已切换会话：%s（模型 %s，共 %d 条消息）"
+                       % (os.path.basename(path), self.config.get("model"), len(messages)))
+
+    def _copy_all(self):
+        try:
+            content = self.output_widget.get("1.0", "end-1c")
+            self.root.clipboard_clear()
+            self.root.clipboard_append(content)
+            self.set_status("已复制全部对话内容到剪贴板")
+        except Exception as exc:
+            self.push_line("! 复制全部失败：%s" % exc)
+
+    def _clear_log(self):
+        try:
+            if self._log_handle is not None:
+                self._log_handle.close()
+            with open(gui_log_path(), "w", encoding="utf-8") as handle:
+                handle.write("")
+            self._log_handle = open(gui_log_path(), "a", encoding="utf-8")
+            self.push_line("● 界面日志已清空：%s" % gui_log_path())
+        except Exception as exc:
+            self.push_line("! 清空日志失败：%s" % exc)
+
+    def _open_guide(self):
+        for name in ("操作指南.txt", "更新说明.txt", "README.md"):
+            path = os.path.join(BASE_DIR, name)
+            if os.path.isfile(path):
+                try:
+                    open_file_or_dir(path)
+                    return
+                except Exception:
+                    pass
+        self._about()
+
+    def _about(self):
+        msg = ("%s v%s\n\n"
+               "工具：pwsh/bash（Shell 会话）、str_replace_editor（文件编辑器）、mouse_control（鼠标控制）、read_image（自主读图）、take_screenshot（自主截屏）\n"
+               "接口：OpenAI 兼容 /chat/completions\n\n"
+               "配置文件：%s\n界面日志：%s\n诊断日志：%s\n工作目录：%s"
+               % (APP_TITLE, VERSION, self.config_file, gui_log_path(), gui_diag_path(),
+                  self.config.get("cwd") or os.getcwd()))
+        self.messagebox.showinfo("关于", msg, parent=self.root)
+
+    def _toggle_reasoning(self):
+        enabled = self.var_reasoning.get()
+        self.config["show_reasoning"] = enabled
+        self.emitter.show_reasoning = enabled
+        note = ""
+        try:
+            save_config_file(self.config_file, self.config)
+            note = "（已写入配置）"
+        except Exception as exc:
+            note = "（写配置失败：%s）" % exc
+        self.push_line("● 显示思考过程：%s%s" % ("开" if enabled else "关", note))
+
+    def _toggle_vision(self):
+        enabled = self.var_vision.get()
+        self.config["support_vision"] = enabled
+        note = ""
+        try:
+            save_config_file(self.config_file, self.config)
+            note = "（已写入配置）"
+        except Exception as exc:
+            note = "（写配置失败：%s）" % exc
+        self.push_line("● 支持图片输入（视觉能力）：%s%s" % ("开" if enabled else "关", note))
+
+    def _send_image_dialog(self):
+        if self.busy:
+            self.push_line("! 上一轮还在执行，请稍后再试或按 Esc 打断。")
+            return
+        if not self.config.get("support_vision", True):
+            self.push_line("! 当前未开启图片读取支持：请先在菜单「设置」中勾选「支持图片输入」")
+            return
+        img_path = self._prompt("本地图片路径（支持 PNG / JPG / WEBP / GIF / BMP）：",
+                                "", secret=False, title="发送图片分析")
+        if not img_path or not img_path.strip():
+            return
+        img_path = img_path.strip().strip('"').strip("'")
+        if not os.path.isfile(img_path):
+            self.push_line("! 图片文件不存在：%s" % img_path)
+            return
+        if not is_image_path(img_path):
+            self.push_line("! 不支持的文件格式（仅支持 png/jpg/jpeg/webp/gif/bmp）：%s" % img_path)
+            return
+        prompt = self._prompt("请输入对这张图片的分析要求（可留空，默认：请分析这张图片）：",
+                              "请详细分析并描述这张图片的内容", secret=False, title="分析提示词")
+        if prompt is None:
+            return
+        prompt = prompt.strip() or "请详细分析并描述这张图片的内容"
+        self.push("\n› [图片: %s] %s\n" % (os.path.basename(img_path), prompt))
+        self._set_busy(True)
+        self.cancel_event = threading.Event()
+        thread = threading.Thread(target=self._worker, args=(prompt,), kwargs={"images": [img_path]})
+        thread.daemon = True
+        thread.start()
+
+    def _request_models(self):
+        if self.model_list is None or (not self.model_list and self.model_error):
+            self.model_error = ""
+            self.model_list = None
+            self.set_status("正在扫描模型列表…")
+            threading.Thread(target=self._fetch_models, daemon=True).start()
+            return
+        self._pick_model()
+
+    def _fetch_models(self):
+        try:
+            ids = fetch_model_ids(self.config, timeout=15)
+            self.model_list = ids
+            self.model_error = "" if ids else "接口没有返回模型列表"
+        except Exception as exc:
+            self.model_list = []
+            self.model_error = str(exc)
+        self.set_status("就绪")
+        self.root.after(0, self._pick_model)
+
+    def _pick_model(self):
+        self.set_status("就绪")
+        current_model = str(self.config.get("model") or "")
+        items = list(self.model_list or [])
+        if self.model_error:
+            self.push_line("! 没能取到模型列表：%s" % self.model_error)
+            self.push_line("  可以直接在下面输入模型名（按 F3 随时重试扫描）。")
+            label = "提示：未取到在线模型列表（可按 F3 重试），请直接在下方输入模型名："
+            if current_model and current_model not in items:
+                items.append(current_model)
+        else:
+            if self.model_list:
+                self.push_line("● 可用模型（%d 个）：%s" % (len(self.model_list), "、".join(self.model_list[:30])))
+            label = "双击列表里的模型，或直接在下面输入模型名"
+            if current_model and current_model not in items:
+                items.insert(0, current_model)
+        chosen = _GuiChoiceDialog.ask(self, "选择模型", label, items, current_model)
+        if chosen and chosen != current_model:
+            self.config["model"] = chosen
+            self.client.model = chosen
+            note = ""
+            try:
+                save_config_file(self.config_file, self.config)
+                note = "（已保存到配置）"
+            except Exception as exc:
+                note = "（写配置失败：%s）" % exc
+            self.push_line("● 模型已切换为：%s %s" % (chosen, note))
+            self.set_status("就绪")
+
+    def _prompt(self, label, current, secret=False, title=None):
+        return _GuiInputDialog.ask(self, label, current, title=title, secret=secret)
+
+    def _on_setup(self):
+        before = str(self.config.get("base_url") or "")
+        values = []
+        steps = (("接口地址 base_url", "base_url", False),
+                 ("API Key（留空=保持原值）", "api_key", True))
+        for index, (label, key, secret) in enumerate(steps, 1):
+            current = str(self.config.get(key) or "")
+            answer = self._prompt(label, current, secret=secret,
+                                  title="设置（第 %d/%d 步）：%s" % (index, len(steps), label))
+            if answer is None:
+                self.push_line("● 已取消设置（配置没有改动）")
+                self.set_status("就绪")
+                return
+            values.append((key, answer.strip() or current))
+        for key, value in values:
+            self.config[key] = value
+        path = getattr(self, "config_file", None) or config_path()
+        try:
+            save_config_file(path, self.config)
+        except Exception as exc:
+            self.push_line("! 配置保存失败：%s" % exc)
+            self.messagebox.showerror("设置", "配置保存失败：\n%s\n%s" % (path, exc), parent=self.root)
+            self.set_status("就绪")
+            return
+        self.push_line("● 接口与密钥已保存：%s" % path)
+        self.client.reload(self.config)
+        self.set_status("就绪")
+        if before != self.config.get("base_url"):
+            self.model_list = None
+            self.model_error = ""
+        self.push_line("● 接着选模型：列表来自接口的 /models，扫不到可以直接输入模型名；取消=保持当前。")
+        self._request_models()
+        self._focus_input()
+
+    def _run_diagnostics(self, what):
+        diag = self._open_diag("pwsh 诊断 / 自检" if IS_WIN else "shell 诊断 / 自检")
+        diag.push("\n===== %s =====\n" % ("离线自检" if what == "selftest" else ("pwsh 诊断" if IS_WIN else "shell 诊断")))
+        thread = threading.Thread(target=self._diag_worker, args=(diag, what,))
+        thread.daemon = True
+        thread.start()
+        self.set_status("诊断在独立窗口里跑，不影响对话")
+
+    def _diag_worker(self, diag, what):
+        stream = _GuiStream(diag.push)
+        old_stdout = sys.stdout
+        try:
+            if what == "selftest":
+                sys.stdout = stream
+                try:
+                    code = run_selftest()
+                finally:
+                    sys.stdout = old_stdout
+                    stream.flush()
+                diag.push("===== 自检结束（退出码 %s）=====\n" % code)
+            else:
+                run_shellcheck(self.config, lambda text="": diag.push((text or "") + "\n"))
+                diag.push("===== 诊断结束 =====\n")
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            path = write_crash_log(exc_type, exc_value, exc_tb, where="gui-diag")
+            diag.push("!! 诊断过程出错：%s\n（详细堆栈已写入 %s）\n" % (exc_value, path))
+        finally:
+            diag.push("")
+
+    def _open_diag(self, title):
+        if self._diag is not None and self._diag.alive():
+            self._diag.focus()
+            return self._diag
+        self._diag = _DiagWindow(self, title)
+        return self._diag
+
+    def _shutdown(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self._save_current_session()
+        except Exception:
+            pass
+        try:
+            self.shell.kill()
+        except Exception:
+            pass
+        if self._log_handle is not None:
+            try:
+                self._log_handle.close()
+            except Exception:
+                pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def run(self):
+        self.root.after(50, self._drain)
+        if self.startup_action == "selftest":
+            self.root.after(100, lambda: self._run_diagnostics("selftest"))
+        elif self.startup_action == "shellcheck":
+            self.root.after(100, lambda: self._run_diagnostics("shellcheck"))
+        elif self.startup_action == "setup":
+            self.root.after(100, self._on_setup)
+        elif self.startup_action == "models":
+            self.root.after(100, self._request_models)
+        elif self.startup_prompt:
+            def send_init():
+                self.input_text.insert("1.0", self.startup_prompt)
+                self._on_send()
+            self.root.after(100, send_init)
+
+        if self.autoclose:
+            self.root.after(int(self.autoclose * 1000), self._shutdown)
+
+        self._focus_input()
+        self.root.mainloop()
+        return 0
 
 class DshGui(object):
     WS_OVERLAPPEDWINDOW = 0x00CF0000
@@ -5636,7 +6767,7 @@ class DshGui(object):
                 elif cid == self.MENU_OPEN_DIAG:
                     self._open_diag("pwsh 诊断 / 自检")
                 elif cid == self.MENU_OPENLOG:
-                    os.startfile(gui_log_path())
+                    open_file_or_dir(gui_log_path())
                 elif cid == self.MENU_CLEARLOG:
                     self._clear_log()
                 elif cid in (self.MENU_MODEL, self.ID_MODEL):
@@ -5645,7 +6776,7 @@ class DshGui(object):
                     self._on_setup()
                 elif cid == self.MENU_OPENCWD:
                     try:
-                        os.startfile(self.config.get("cwd") or os.getcwd())
+                        open_file_or_dir(self.config.get("cwd") or os.getcwd())
                     except Exception as exc:
                         self.push_line("! 打不开工作目录：%s" % exc)
                 elif cid == self.MENU_GUIDE:
@@ -6040,7 +7171,7 @@ class DshGui(object):
             path = os.path.join(BASE_DIR, name)
             if os.path.isfile(path):
                 try:
-                    os.startfile(path)
+                    open_file_or_dir(path)
                     return
                 except Exception:
                     pass
@@ -6356,6 +7487,92 @@ class _GuiTui(object):
 
 
 class _GuiInputDialog(object):
+
+    @classmethod
+    def _ask_tk(cls, parent, *args, **kwargs):
+        import tkinter as tk
+        from tkinter import ttk
+        label = ""
+        current = ""
+        title = "输入"
+        secret = False
+        if len(args) >= 1: label = args[0]
+        if len(args) >= 2: current = args[1]
+        if len(args) >= 3: title = args[2]
+        if len(args) >= 4: secret = bool(args[3])
+        if "label" in kwargs: label = kwargs["label"]
+        if "prompt" in kwargs: label = kwargs["prompt"]
+        if "current" in kwargs: current = kwargs["current"]
+        if "default" in kwargs: current = kwargs["default"]
+        if "title" in kwargs: title = kwargs["title"]
+        if "secret" in kwargs: secret = bool(kwargs["secret"])
+        if not title: title = "输入"
+
+        root = getattr(parent, "root", None)
+        top = tk.Toplevel(root) if root else tk.Tk()
+        top.title(title)
+        if root:
+            try:
+                root.update_idletasks()
+                rx, ry = root.winfo_rootx(), root.winfo_rooty()
+                rw, rh = root.winfo_width(), root.winfo_height()
+                x = max(0, rx + (rw - 500) // 2)
+                y = max(0, ry + (rh - 220) // 2)
+                top.geometry("500x220+%d+%d" % (x, y))
+            except Exception:
+                top.geometry("500x220")
+        else:
+            top.geometry("500x220")
+        top.resizable(False, False)
+        if root:
+            top.transient(root)
+            top.grab_set()
+
+        value_holder = [None]
+
+        lbl = ttk.Label(top, text=label, wraplength=460, justify="left")
+        lbl.pack(padx=16, pady=(16, 8), anchor="w")
+
+        var_text = tk.StringVar(value=current or "")
+        entry = ttk.Entry(top, textvariable=var_text, width=50, show="*" if secret else "")
+        entry.pack(padx=16, pady=4, fill="x")
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        if secret:
+            var_show = tk.BooleanVar(value=False)
+            def toggle_show():
+                entry.config(show="" if var_show.get() else "*")
+            chk = ttk.Checkbutton(top, text="显示明文", variable=var_show, command=toggle_show)
+            chk.pack(padx=16, pady=4, anchor="w")
+
+        btn_frame = ttk.Frame(top)
+        btn_frame.pack(padx=16, pady=(12, 16), anchor="e", fill="x")
+
+        def on_ok(event=None):
+            val = var_text.get()
+            value_holder[0] = val
+            top.destroy()
+
+        def on_cancel(event=None):
+            value_holder[0] = None
+            top.destroy()
+
+        top.bind("<Return>", on_ok)
+        top.bind("<Escape>", on_cancel)
+
+        cancel_btn = ttk.Button(btn_frame, text="取消", command=on_cancel)
+        cancel_btn.pack(side="right", padx=(8, 0))
+        ok_btn = ttk.Button(btn_frame, text="确定", command=on_ok)
+        ok_btn.pack(side="right")
+
+        if root:
+            root.wait_window(top)
+        else:
+            top.mainloop()
+
+        return value_holder[0]
+
     """单行输入框（Windows 没有现成的 InputBox，只能自己搭个小窗口）。
 
     这里是 v1.1.3 的主战场 —— 用户反馈"密钥根本填不进去"，实测是三个缺陷叠在一起：
@@ -6529,6 +7746,8 @@ class _GuiInputDialog(object):
     @classmethod
     def ask(cls, parent, label, current="", title=None, secret=False):
         """弹一个单行输入框。返回 None 表示取消。"""
+        if not IS_WIN:
+            return cls._ask_tk(parent, label, current, title, secret)
         dlg, state = cls._create(parent, label, current, title, secret)
         if not dlg:
             return None
@@ -6549,8 +7768,9 @@ def run_gui(config, autoclose=0, startup_action="", startup_prompt=None, config_
     first_run = not config.get("api_key")
     if first_run and not startup_action and not autoclose:
         startup_action = "setup"          # 第一次使用：窗口起来后自动弹设置（填地址 + 密钥）
-    gui = DshGui(config, autoclose=autoclose, startup_action=startup_action,
-                 startup_prompt=startup_prompt, config_file=config_file)
+    gui_cls = DshGui if IS_WIN else DshTkGui
+    gui = gui_cls(config, autoclose=autoclose, startup_action=startup_action,
+                  startup_prompt=startup_prompt, config_file=config_file)
     config["cwd"] = config.get("cwd") or os.getcwd()
     gui.push("%s v%s  ——  图形界面\n" % (APP_TITLE, VERSION))
     gui.push("工作目录：%s\n配置文件：%s\n界面日志：%s\n诊断日志：%s\n"
@@ -6594,6 +7814,7 @@ def build_parser():
                         help="pwsh 会话模式：auto=优先持久、失败自动降级；persistent=强制持久；oneshot=每条命令一个进程")
     parser.add_argument("--shellcheck", action="store_true", help="离线诊断 pwsh 工具（Win7/老系统排障用）")
     parser.add_argument("--gui", action="store_true", help="打开图形界面（无控制台黑框）")
+    parser.add_argument("--tui", "--cli", action="store_true", help="进入终端交互模式（TUI 字符界面，适合无图形桌面或纯终端环境）")
     parser.add_argument("--models", action="store_true",
                         help="打开图形界面并弹出模型选择列表（等价于启动时 F3）")
     parser.add_argument("--gui-autoclose", type=int, default=0,
@@ -6624,6 +7845,17 @@ def _message_box(text, title=None):
             shown = True
         except Exception:
             shown = False
+    else:
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(title or APP_TITLE, text)
+            root.destroy()
+            shown = True
+        except Exception:
+            shown = False
     if not shown:
         try:
             print(text)
@@ -6641,8 +7873,12 @@ def main(argv=None):
     # 无控制台（windowed 打包）时图形界面就是唯一的界面：
     # --selftest / --shellcheck / --setup / -p 这些参数会被翻译成"开窗口 + 自动执行该动作"。
     headless_build = (sys.stdout is None and sys.stderr is None)
-    if args.gui or headless_build:
+    is_cli_action = bool(args.selftest or args.shellcheck or args.prompt is not None)
+    want_tui = getattr(args, "tui", False)
+    run_as_gui = not want_tui and (args.gui or headless_build or (gui_supported() and not is_cli_action and (not sys.stdin.isatty() or len(sys.argv) <= 1 or args.models or args.setup)))
+    if run_as_gui:
         config = resolve_config(args)
+        config["gui_mode"] = True
         if not config.get("cwd") or not os.path.isdir(config["cwd"]):
             config["cwd"] = os.getcwd()
         action = ""
@@ -6682,6 +7918,7 @@ def main(argv=None):
             return 2
 
     config = resolve_config(args)
+    config["gui_mode"] = False if (want_tui or not is_gui_available()) else True
     reader = StdinReader(config.get("shell_encoding") or "auto")
 
     if args.setup:

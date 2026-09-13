@@ -1,0 +1,231 @@
+========================================================================
+  DSH 极简 Agent（dsh-mini）操作指南
+  适用：Linux x86_64（Ubuntu / Debian / CentOS / Fedora 等发行版）
+========================================================================
+
+一、它是什么
+------------------------------------------------------------------------
+一个单文件、零依赖、双击即开的 Linux 本地 Agent，功能与 DSH 的「极简模式」完全对齐，
+提供面向 AI 自主调用的完整工具集：
+  1) pwsh / bash          持久 Linux Shell 会话（环境变量、cd 工作目录跨调用保持）
+  2) str_replace_editor   文件编辑器（view / create / str_replace / insert，支持 Linux 绝对路径）
+  3) mouse_control        鼠标自主控制（move / click / double_click / down / up / scroll / position）
+  4) read_image           自主读取本地图片送入多模态视觉分析（支持 PNG / JPG / WEBP / GIF / BMP）
+  5) take_screenshot      自主截取桌面屏幕分析 GUI（自动对接 Linux 原生截屏能力）
+接口支持标准 OpenAI Chat Completions 协议（文本与 Vision 多模态格式）。
+
+程序本体为 Linux 单文件二进制：dsh-mini，纯图形界面（无需终端黑框，双击即开窗口）。
+中文渲染、字体排版由原生 GUI 控件处理；界面上的每一行同时写进 dsh-mini-gui.log，排障极其方便。
+
+【快速上手】
+  1) 双击运行：
+     · 在桌面直接双击 dsh-mini.desktop 图标；
+     · 或在文件管理器中双击 dsh-mini 单文件程序（或在终端运行 ./dsh-mini）。
+     第一次使用（尚未配置密钥时）会【自动弹出配置向导】，无需记忆任何按键。
+  2) 设置向导只需两步：填「接口地址」-> 回车 -> 填「API Key」-> 回车。
+     光标已自动置于输入框中，支持直接输入或 Ctrl+V 粘贴（回车=确定、Esc=取消）。
+     API Key 默认打码显示，勾选「显示明文」可进行核对；留空则保持原值。
+     确定后自动保存配置，并【自动接着弹出模型选择列表】（来自接口的 /models，
+     也可以直接在输入框中手输模型名；取消=保持当前模型）。
+     以后想修改设置，随时按 F2（接口与密钥）或 F3（选择模型）。
+  3) 按 F5 可随时运行 92 项离线自检，确认全部功能完好；
+     按 F6 可进行 Shell 环境诊断，确认持久命令会话状态。
+     （自检与诊断结果均在独立窗口显示，并写入 dsh-mini-diagnose.txt，不影响对话）
+  4) 在底部多行输入框内打字提问，回车发送：
+     · 模型的【思考过程】以 … 开头实时流式显示（若觉得想偏或死循环，按 Esc
+       或点击「停止」按钮随时打断）；正文回复以 ● 开头。
+     · 按 F4（或菜单 设置->显示思考过程）可随时开启或关闭思维链显示。
+     · 输出流式滚动，最新内容始终保持在可视区域底端。
+  5) 命令执行过程实时显示：» bash/pwsh / 命令 / 实时输出 / √完成 或 ×失败，
+     真实输出同步打印并记录到 dsh-mini-gui.log 中。
+
+【多对话管理】
+  菜单 会话(S)：
+    新对话（Ctrl+L）     当前会话自动保存，清空显示开始全新对话
+    打开会话…(Ctrl+O)    列出已保存会话（时间/模型/消息数），选中即可无缝切换
+    保存会话（Ctrl+S）   手动将当前对话存档
+    发送图片…（Ctrl+P）  输入本地图片路径与提示词，自动以多模态视觉格式分析
+  退出程序时，有内容的对话均会自动存档，绝不丢失。
+
+
+二、双击即开与快速开始
+------------------------------------------------------------------------
+1. 把 dsh-mini 复制到 Linux 机器任意位置（U 盘、主目录、桌面均可）。
+   无需安装 Python，无需安装任何第三方库。
+2. 双击 dsh-mini.desktop 桌面图标，或双击 dsh-mini 文件。
+3. 首次启动会自动弹出输入框：
+     接口地址 base_url : 例如 https://api.deepseek.com
+     API Key           : 你的密钥（例如 sk-...）
+     模型名 model      : 自动列出，或直接输入 deepseek-chat
+   - 地址支持智能规范化：
+       裸域名（如 https://api.deepseek.com）        -> 自动补全 /v1/chat/completions
+       以 /v1 /v2 结尾（如 https://x.com/v1）        -> 自动补全 /chat/completions
+       自定义路径（如 https://x.com/openai）         -> 自动补全 /chat/completions
+       完整端点（含 /chat/completions）              -> 原样使用
+   - 配置保存在程序同目录下的 dsh-mini.config.json，下次启动直接开聊。
+4. 如需重新配置：随时按 F2 重新走向导，或在命令行运行 ./dsh-mini --setup。
+
+
+三、文件与目录分布
+------------------------------------------------------------------------
+默认采用便携模式（Portable），所有数据均存放在 dsh-mini 同目录中：
+
+  配置文件   <程序目录>/dsh-mini.config.json
+  会话记录   <程序目录>/sessions/session-日期-时间-随机.json
+  界面日志   <程序目录>/dsh-mini-gui.log
+  诊断日志   <程序目录>/dsh-mini-diagnose.txt
+  崩溃日志   <程序目录>/dsh-mini-error.log（仅在异常崩溃时生成）
+
+目录文件一览：
+  dsh-mini               Linux 64位单文件程序本体（双击即开）
+  dsh-mini.desktop       Linux 桌面快捷图标（双击直接开窗）
+  start-dsh-mini.sh      终端启动脚本（./start-dsh-mini.sh）
+  操作指南.txt           本指南文件
+  更新说明.txt           版本更新与 Linux 适配说明
+  README.md              项目说明文档
+  dsh-mini.config.json   配置文件（启动后自动生成）
+  sessions/              保存的会话归档
+  dev/                   开发包目录（含完整源码、一键打包脚本 build-linux.sh 等）
+
+如果 dsh-mini 所在目录为只读系统目录，程序会自动启用只读回退机制：
+  配置文件   ~/.config/dsh-mini/dsh-mini.config.json
+  会话记录   ~/.local/share/dsh-mini/sessions/*.json
+
+
+四、重置与清理
+------------------------------------------------------------------------
+需要重置配置或清理记录时，只需删除两项：
+  1) 配置文件   dsh-mini.config.json（删除后下次启动重新走向导）
+  2) 会话记录   sessions 文件夹内的所有 *.json
+
+【图形操作】
+  在文件管理器中直接右键删除 dsh-mini.config.json 或清空 sessions 文件夹。
+
+【命令行清理】
+  rm -f dsh-mini.config.json
+  rm -rf sessions/*.json
+  rm -f dsh-mini-gui.log dsh-mini-diagnose.txt dsh-mini-error.log
+
+【清理只读回退位置（如使用）】
+  rm -rf ~/.config/dsh-mini
+  rm -rf ~/.local/share/dsh-mini
+
+
+五、会话切换与管理
+------------------------------------------------------------------------
+推荐使用菜单栏：会话(S) -> 新对话 / 打开会话… / 保存会话。
+
+输入框内置命令支持：
+  /clear  或  /new
+      清空当前上下文，开启新对话（旧记录完好保存在磁盘上）。
+  /save [自定义路径]
+      将当前对话保存为 JSON。例如：/save /home/user/my_chat.json
+  /resume list
+      列出最近保存的会话清单（按时间倒序，带编号）。
+  /resume [序号|文件路径]
+      恢复指定会话继续交流。
+  /exit  或  /quit
+      退出程序（自动保存有内容的对话）。
+
+
+六、切换模型
+------------------------------------------------------------------------
+【在线扫描并选择（F3）】
+  按 F3 或菜单 设置->选择模型，程序会自动向接口发送 GET /models 获取可用模型列表，
+  并在弹窗中列出。双击列表中的模型名称，或直接在下方输入框中输入模型名并回车即可。
+
+【快捷命令切换】
+  /models            扫描并弹出选择窗口
+  /model             查看当前正在使用的模型
+  /model 模型名      直接切换到指定模型（例如 /model deepseek-reasoner）
+
+
+七、全部快捷键一览
+------------------------------------------------------------------------
+| 快捷键 | 功能说明 |
+|---|---|
+| Enter | 发送输入框中的消息 |
+| Shift+Enter / Ctrl+J | 在输入框中换行（多行输入时文本框自动增高） |
+| Esc | 打断当前模型输出或正在执行的 Shell 命令（等同「停止」按钮） |
+| ↑ / ↓ | 翻阅历史发送记录（单行状态下可用） |
+| Ctrl+C | 有选中文本=复制；无选中=清空输入框；空行再按一次=退出 |
+| Ctrl+D | 快速退出程序 |
+| Ctrl+L / F7 | 新对话（自动存档并清空显示） |
+| Ctrl+S | 手动保存当前会话到 sessions/ |
+| Ctrl+O | 打开会话选择框，切换历史会话 |
+| Ctrl+P | 弹出图片输入框，发送图片供大模型视觉多模态分析 |
+| F1 | 打开操作指南 / 帮助 |
+| F2 | 打开接口地址与 API Key 配置向导 |
+| F3 | 在线扫描并选择模型 |
+| F4 | 开启 / 关闭模型思考链（思维链）实时显示 |
+| F5 | 运行 92 项离线自检（独立窗口，不影响对话） |
+| F6 | 运行 Shell 环境诊断（检查 Bash/PowerShell 状态） |
+| F8 | 一键复制对话区内的全部文本到系统剪贴板 |
+
+
+八、命令行参数
+------------------------------------------------------------------------
+dsh-mini 是原生图形程序，直接双击运行即可。以下参数用于自动化脚本与排障：
+
+  ./dsh-mini                          打开图形界面（默认）
+  ./dsh-mini -p "你的问题"            单次执行：命令行直接发送提问并打印结果
+  ./dsh-mini --setup                  打开并自动进入接口与密钥设置向导
+  ./dsh-mini --models                 打开并自动进入模型选择窗口
+  ./dsh-mini --selftest               运行 92 项离线自检套件（支持纯终端与 GUI）
+  ./dsh-mini --shellcheck             运行 Shell 环境诊断
+  ./dsh-mini --config 配置文件.json   指定加载特定的配置文件
+  ./dsh-mini --model 模型名称         临时指定本次运行的模型
+  ./dsh-mini --cwd 工作目录路径       指定初始工作目录
+  ./dsh-mini --shell-mode persistent  指定持久 Shell 模式（auto / persistent / oneshot）
+  ./dsh-mini --no-stream              关闭流式打字输出
+  ./dsh-mini --version                查看版本信息
+
+
+九、配置文件常用字段（dsh-mini.config.json）
+------------------------------------------------------------------------
+  base_url          接口地址，例如 https://api.deepseek.com
+  api_key           API 访问密钥
+  model             默认使用的模型名称，例如 deepseek-chat
+  model_picker      启动时是否弹出模型选择列表（默认 true）
+  show_reasoning    是否显示模型思维链（思考过程），默认 true（按 F4 可切换）
+  support_vision    是否开启多模态图片分析支持，默认 true
+  include_usage     是否在回复末尾统计 token 消耗与缓存命中，默认 true
+  temperature       采样温度（默认 0）
+  stream            是否开启流式传输（默认 true）
+  shell_exe         指定 Shell 可执行文件路径（留空自动探测 /bin/bash）
+  shell_mode        Shell 运行模式（auto=自动 / persistent=长驻 / oneshot=单命令）
+  max_output_chars  工具执行输出最大截断字符数（默认 16000）
+  cwd               工作目录（留空为程序所在目录）
+
+
+十、常见问题与解答（Linux 专篇）
+------------------------------------------------------------------------
+Q: 双击 dsh-mini 提示权限不足或无法打开？
+A: Linux 下可执行文件需要有可执行权限（x 位）。在终端执行一次：
+   chmod +x dsh-mini start-dsh-mini.sh dsh-mini.desktop
+   或者在桌面双击 dsh-mini.desktop 即可直接运行。
+
+Q: 首次运行怎么配置密钥？
+A: 首次启动窗口会【自动居中弹出设置向导】，依次输入 base_url 与 API Key 即可；
+   后续想修改，随时按 F2 或点击菜单「设置」->「接口与密钥」。
+
+Q: 鼠标操作（mouse_control）需要安装什么？
+A: mouse_control 工具基于 Linux 的 xdotool，如果系统中尚未安装，
+   只需运行：sudo apt install xdotool
+   若未安装，程序会自动优雅降级并返回模拟状态，不影响对话。
+
+Q: 截图功能（take_screenshot）支持哪些工具？
+A: 程序内置了自适应截图调用链，优先使用 scrot，同时兼容 gnome-screenshot、
+   grim 与 ImageMagick import。在 Ubuntu/Debian 上推荐：
+   sudo apt install scrot
+
+Q: AI 执行命令时环境变量和 cd 目录能否保持？
+A: 能！Linux 专用分支采用持久化 Bash 会话长驻机制，通过标准输入输出协议工作，
+   export 的环境变量、cd 切换的目录、定义的别名和函数在多轮对话间均持续生效。
+
+Q: 怎么从源码自行重新打包？
+A: 开发源码位于 dev/ 目录下，使用 dev/build-linux.sh 脚本即可一键完成打包：
+   cd dev
+   bash build-linux.sh
+   脚本将使用 PyInstaller 自动完成单文件构建并运行 92 项自检测试。
+========================================================================

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DSH 极简 Agent
+Comment=单文件本地 Agent (Linux)
+Exec=sh -c '"$(dirname "$1")"/dsh-mini' dummy %k
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
